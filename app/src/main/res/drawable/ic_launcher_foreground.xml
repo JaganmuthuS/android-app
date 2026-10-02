@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Arc-reactor style emblem -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M54,30a24,24 0,1 1,0 48a24,24 0,1 1,0 -48z"
+        android:strokeWidth="3"
+        android:strokeColor="#FF22D3EE"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M54,38a16,16 0,1 1,0 32a16,16 0,1 1,0 -32z"
+        android:strokeWidth="2"
+        android:strokeColor="#9922D3EE"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M54,46a8,8 0,1 1,0 16a8,8 0,1 1,0 -16z"
+        android:fillColor="#FFE0FBFF" />
+    <path
+        android:pathData="M54,30L54,38M54,70L54,78M30,54L38,54M70,54L78,54"
+        android:strokeWidth="3"
+        android:strokeColor="#FF22D3EE" />
+</vector>
