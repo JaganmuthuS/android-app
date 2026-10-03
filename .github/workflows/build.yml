@@ -3,6 +3,7 @@ name: Build Jarvis APK
 on:
   push:
     branches: [main]
+    paths-ignore: ['web/**', '.github/workflows/pages.yml', 'README.md']
   pull_request:
   workflow_dispatch:
 

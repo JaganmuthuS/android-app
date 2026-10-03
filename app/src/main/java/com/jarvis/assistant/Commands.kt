@@ -23,7 +23,7 @@ class Commands(private val context: Context) {
         val text = input.trim().lowercase(Locale.getDefault()).removePrefix("jarvis").trim(' ', ',', '.', '!', '?')
 
         return when {
-            text.matches(Regex("(what('s| is) the )?time( is it)?( now)?")) ->
+            text.matches(Regex("((what('s| is) the )?time( is it)?|what time is it|tell me the time)( now| right now)?")) ->
                 "It is ${SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date())}."
 
             text.matches(Regex("(what('s| is) )?(today'?s )?(the )?date( today)?|what day is (it|today)")) ->

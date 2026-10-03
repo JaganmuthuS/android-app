@@ -2,7 +2,23 @@
 
 A free personal AI assistant for Android, with voice input, spoken replies and phone controls.
 
-## Install on your phone
+## iPhone (web app)
+
+1. Open **https://jaganmuthus.github.io/android-app/** in **Safari** on your iPhone.
+2. Tap **Share** (the square with an arrow), then **Add to Home Screen**, then **Add**.
+3. Open **Jarvis** from your home screen. It runs full-screen like a normal app, and it's free with no App Store needed.
+
+The iPhone version lives in `web/` and redeploys to GitHub Pages on every push (`.github/workflows/pages.yml`).
+
+What it adds:
+- **Auto-fallback.** If the chosen AI is busy, Jarvis tries every other AI you've set up, and each reply shows which one answered.
+- **Hands-free conversation (🎧).** Jarvis listens again after each reply, so you can keep talking.
+- **Reminders.** "remind me at 6 pm to buy milk" or "remind me to call Mom in 20 minutes". Tap **Add to iPhone Calendar** so your phone alerts you even when Jarvis is closed. "my reminders" lists them.
+- **Memory.** "remember my car is on level B2", and later "where did I park?". "what do you remember" lists everything; "forget everything" wipes it.
+- **Formatted replies** (bold, lists, code) with **Copy** and **Speak** buttons.
+- **iPhone actions:** "call 98765…", "text 98765… saying I'm late", "whatsapp 98765… saying hi", "open whatsapp", "navigate to the airport", "play lo-fi on youtube", "search for …".
+
+## Android: install on your phone
 
 1. Open **Releases → Jarvis 1.0** in this repo on your phone and download `Jarvis-1.0.apk`.
 2. Open the file. Android will ask you to allow installs from your browser or file manager. Allow it, then tap **Install**.
