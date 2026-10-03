@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Jarvis</title>
+<meta name="description" content="J.A.R.V.I.S. 1.0 — a free personal AI assistant.">
+<meta name="theme-color" content="#0a0f1a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Jarvis">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="reactor" id="reactor" aria-hidden="true"></div>
+    <div>
+      <h1>J.A.R.V.I.S.</h1>
+      <div class="sub" id="sub">v1.0</div>
+    </div>
+  </div>
+  <div class="actions">
+    <button id="btnVoice" class="icon" aria-label="Toggle spoken replies">🔊</button>
+    <button id="btnHands" class="icon" aria-label="Toggle hands-free conversation">🎧</button>
+    <button id="btnClear" class="icon" aria-label="Clear chat">🗑</button>
+    <button id="btnSettings" class="icon" aria-label="Settings">⚙︎</button>
+  </div>
+</header>
+
+<div id="install" class="install" hidden>
+  Install Jarvis: tap <b>Share</b> <span class="share">⬆︎</span> then <b>Add to Home Screen</b>.
+  <button id="installClose" class="link" aria-label="Dismiss">✕</button>
+</div>
+
+<main id="chat" aria-live="polite"></main>
+
+<form id="composer" autocomplete="off">
+  <textarea id="input" rows="1" placeholder="Ask Jarvis anything…" enterkeyhint="send"></textarea>
+  <button type="button" id="btnMic" class="round" aria-label="Speak">
+    <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5.3-3A5.3 5.1 0 0 1 12 16.1 5.3 5.1 0 0 1 6.7 11H5c0 3.4 2.7 6.2 6 6.7V21h2v-3.3c3.3-.5 6-3.3 6-6.7z"/></svg>
+  </button>
+  <button type="submit" id="btnSend" class="round" aria-label="Send" hidden>
+    <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+  </button>
+</form>
+
+<dialog id="settings">
+  <form method="dialog" id="settingsForm">
+    <h2>Jarvis settings</h2>
+
+    <fieldset>
+      <legend>AI brain</legend>
+      <div id="providerList"></div>
+      <p class="hint">If the chosen brain is busy, Jarvis automatically tries the others you've set up.</p>
+    </fieldset>
+
+    <div id="keyRow">
+      <label>API key <input id="apiKey" type="password" autocapitalize="off" spellcheck="false"></label>
+      <a id="keyLink" target="_blank" rel="noopener">Get a free key →</a>
+    </div>
+    <label>Model <input id="model" autocapitalize="off" spellcheck="false"></label>
+    <label>What should Jarvis call you? <input id="userName" autocapitalize="words"></label>
+    <label class="switch"><input type="checkbox" id="optVoice"> Speak replies aloud</label>
+    <label class="switch"><input type="checkbox" id="optHands"> Hands-free: listen again after each reply</label>
+
+    <fieldset>
+      <legend>Memory</legend>
+      <ul id="notesList" class="notes"></ul>
+      <button type="button" id="btnForget" class="link danger">Forget everything</button>
+    </fieldset>
+
+    <div class="row">
+      <button value="cancel" class="link">Cancel</button>
+      <button value="save" id="btnSave" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>
