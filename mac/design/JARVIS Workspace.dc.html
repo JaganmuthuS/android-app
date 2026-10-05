@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/modernist-a1bab0af-41b0-4ffe-b62e-76b9777c33d5/styles.css">
+<script src="_ds/modernist-a1bab0af-41b0-4ffe-b62e-76b9777c33d5/_ds_bundle.js"></script>
+<style>body{margin:0;background:var(--color-neutral-300);font-family:var(--font-body);color:var(--color-text)}a{color:var(--color-accent-700)}a:hover{color:var(--color-accent)}@keyframes jpulse{0%,100%{opacity:1}50%{opacity:.25}}</style>
+</helmet>
+<div style="padding:40px;display:flex;justify-content:flex-start;width:max-content">
+<div data-screen-label="JARVIS workspace" style="flex:none;width:1440px;height:900px;background:var(--color-bg);box-shadow:var(--shadow-lg);display:grid;grid-template-rows:52px 1fr 60px;overflow:hidden">
+
+<div style="display:grid;grid-template-columns:260px 1fr auto;align-items:center;border-bottom:2px solid var(--color-divider)">
+  <div style="display:flex;align-items:center;gap:16px;padding:0 16px;height:100%;border-right:2px solid var(--color-divider)">
+    <div style="display:flex;gap:8px"><span style="width:12px;height:12px;border-radius:50%;background:#ff5f57"></span><span style="width:12px;height:12px;border-radius:50%;background:#febc2e"></span><span style="width:12px;height:12px;border-radius:50%;background:#28c840"></span></div>
+    <div style="font-family:var(--font-heading);font-weight:800;font-size:18px;letter-spacing:0.04em">JARVIS</div>
+    <span style="width:8px;height:8px;background:var(--color-accent)"></span>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;padding:0 20px;font-size:13px">
+    <span style="color:var(--color-neutral-700)">Workspace</span><span style="font-weight:600">~/Work/Northwind</span>
+    <span class="tag tag-neutral" style="white-space:nowrap">{{ runningLabel }}</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:12px;padding:0 16px">
+    <span style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--color-neutral-700)">Autonomy</span>
+    <div class="seg">
+      <sc-for list="{{ autonomyOpts }}" as="o" hint-placeholder-count="3">
+        <button onClick="{{ o.pick }}" class="seg-opt" style="white-space:nowrap;border:0;font:inherit;font-size:13px;background:{{ o.bg }};color:{{ o.fg }}">{{ o.label }}</button>
+      </sc-for>
+    </div>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:260px 480px minmax(0,1fr);min-height:0">
+
+  <div style="border-right:2px solid var(--color-divider);display:flex;flex-direction:column;min-height:0">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 16px 8px">
+      <h6 style="margin:0">Task lanes</h6>
+      <button class="btn btn-ghost" style="font-size:13px">+ New lane</button>
+    </div>
+    <div style="display:flex;flex-direction:column">
+      <sc-for list="{{ lanes }}" as="l" hint-placeholder-count="5">
+        <button onClick="{{ l.select }}" style="all:unset;cursor:pointer;display:grid;grid-template-columns:4px 1fr;gap:12px;padding:12px 16px 12px 0;border-top:1px solid var(--color-neutral-300);background:{{ l.bg }}">
+          <span style="background:{{ l.bar }}"></span>
+          <span style="display:flex;flex-direction:column;gap:4px;min-width:0">
+            <span style="font-weight:600;font-size:14px;line-height:1.25">{{ l.title }}</span>
+            <span style="font-size:12px;color:var(--color-neutral-700)">{{ l.status }}</span>
+            <span style="height:2px;background:var(--color-neutral-300);display:block"><span style="display:block;height:2px;width:{{ l.pct }};background:{{ l.fill }}"></span></span>
+          </span>
+        </button>
+      </sc-for>
+    </div>
+    <div style="border-top:2px solid var(--color-divider);margin-top:auto;padding:16px">
+      <h6 style="margin:0 0 12px">Folder access</h6>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <sc-for list="{{ scopes }}" as="s" hint-placeholder-count="4">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ s.path }}</span>
+            <span class="{{ s.cls }}">{{ s.mode }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="border-top:2px solid var(--color-divider);padding:16px">
+      <h6 style="margin:0 0 8px">Remembers</h6>
+      <div style="font-size:12px;color:var(--color-neutral-800);display:flex;flex-direction:column;gap:6px">
+        <sc-for list="{{ memory }}" as="m" hint-placeholder-count="3"><span>{{ m }}</span></sc-for>
+      </div>
+    </div>
+  </div>
+
+  <div style="border-right:2px solid var(--color-divider);display:flex;flex-direction:column;min-height:0">
+    <div style="padding:14px 20px 12px;border-bottom:2px solid var(--color-divider)">
+      <div style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--color-accent-700)">Lane {{ lane.num }}</div>
+      <div style="font-family:var(--font-heading);font-weight:800;font-size:20px;line-height:1.2">{{ lane.title }}</div>
+    </div>
+
+    <sc-if value="{{ isMain }}" hint-placeholder-val="{{ true }}">
+    <div data-chat-scroll="1" style="flex:1;overflow:auto;padding:20px;display:flex;flex-direction:column;gap:16px">
+      <sc-for list="{{ messages }}" as="m" hint-placeholder-count="3">
+        <sc-if value="{{ m.isUser }}">
+          <div style="align-self:flex-end;max-width:85%;background:var(--color-text);color:var(--color-bg);padding:12px 14px;font-size:14px;line-height:1.5;text-wrap:pretty">{{ m.text }}</div>
+        </sc-if>
+        <sc-if value="{{ m.isText }}">
+          <div style="display:flex;flex-direction:column;gap:6px;max-width:92%">
+            <span style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600">Jarvis</span>
+            <div style="font-size:14px;line-height:1.55;text-wrap:pretty">{{ m.text }}</div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ m.isPlan }}">
+          <div style="border:2px solid var(--color-text)">
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:2px solid var(--color-text)">
+              <span style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600">Plan · {{ planProgress }}</span>
+              <span style="font-size:11px;color:var(--color-neutral-700)">Scope: Finance (read) · Board (write)</span>
+            </div>
+            <sc-for list="{{ planSteps }}" as="s">
+              <div style="display:grid;grid-template-columns:16px 1fr auto;gap:10px;align-items:center;padding:9px 12px;border-top:1px solid var(--color-neutral-300);font-size:13px">
+                <span style="width:10px;height:10px;background:{{ s.fill }};border:{{ s.border }};animation:{{ s.anim }}"></span>
+                <span style="color:{{ s.color }}">{{ s.text }}</span>
+                <span style="font-size:11px;color:var(--color-neutral-700)">{{ s.note }}</span>
+              </div>
+            </sc-for>
+            <sc-if value="{{ showPlanActions }}">
+              <div style="display:flex;gap:8px;padding:12px;border-top:2px solid var(--color-text)">
+                <button onClick="{{ approvePlan }}" class="btn btn-primary" style="justify-content:flex-start">Approve plan</button>
+                <button class="btn btn-secondary" style="justify-content:flex-start">Edit steps</button>
+              </div>
+            </sc-if>
+            <sc-if value="{{ showResume }}">
+              <div style="display:flex;gap:8px;align-items:center;padding:12px;border-top:2px solid var(--color-text)">
+                <button onClick="{{ resume }}" class="btn btn-primary" style="justify-content:flex-start">Resume from step {{ resumeStep }}</button>
+                <span style="font-size:12px;color:var(--color-neutral-700)">Restored to checkpoint</span>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+        <sc-if value="{{ m.isLog }}">
+          <div style="display:flex;gap:8px;font-size:12px;color:var(--color-neutral-800);border-left:2px solid var(--color-neutral-400);padding-left:12px"><span style="font-weight:600;min-width:56px">{{ m.verb }}</span><span>{{ m.what }}</span></div>
+        </sc-if>
+        <sc-if value="{{ m.isGate }}">
+          <div style="border:2px solid var(--color-accent);background:var(--color-accent-100)">
+            <div style="padding:10px 12px;border-bottom:2px solid var(--color-accent);font-size:11px;letter-spacing:0.08em;text-transform:uppercase;font-weight:600;color:var(--color-accent-800)">Approval needed</div>
+            <div style="padding:12px;font-size:14px;line-height:1.5;color:var(--color-accent-900)">Export Q3-Board.docx to <b>Board/Out/Q3-Board.pdf</b>. This is the first file that leaves the working draft.</div>
+            <div style="display:flex;gap:8px;align-items:center;padding:0 12px 12px">
+              <button onClick="{{ approveExport }}" disabled="{{ exportBlocked }}" class="btn btn-primary" style="justify-content:flex-start">Approve export</button>
+              <span style="font-size:12px;color:var(--color-accent-800)">{{ gateNote }}</span>
+            </div>
+          </div>
+        </sc-if>
+      </sc-for>
+      <sc-if value="{{ thinking }}">
+        <div style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--color-neutral-700)"><span style="width:8px;height:8px;background:var(--color-accent);animation:jpulse 1s infinite"></span>{{ thinkingText }}</div>
+      </sc-if>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ notMain }}">
+    <div style="flex:1;padding:20px;display:flex;flex-direction:column;gap:16px">
+      <div class="card">
+        <div class="card-kicker">{{ lane.status }}</div>
+        <div class="card-body" style="opacity:1;font-size:14px;line-height:1.55">{{ lane.last }}</div>
+        <div class="card-meta">Updated {{ lane.when }}</div>
+      </div>
+      <button onClick="{{ backToMain }}" class="btn btn-secondary" style="justify-content:flex-start;align-self:flex-start">Back to Q3 Board Report</button>
+    </div>
+    </sc-if>
+
+    <div style="border-top:2px solid var(--color-divider);padding:12px 16px 14px;display:flex;flex-direction:column;gap:10px">
+      <sc-if value="{{ showSuggest }}">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <span class="tag tag-outline">@Q3-Board.docx</span>
+          <span class="tag tag-outline">@Sept-close.xlsx</span>
+          <span class="tag tag-neutral">@lane EU AI Act</span>
+        </div>
+      </sc-if>
+      <div style="display:flex;gap:8px;align-items:flex-end">
+        <textarea class="input" value="{{ draft }}" onChange="{{ onDraft }}" onKeyDown="{{ onKey }}" placeholder="Ask Jarvis, or type / for commands" style="min-height:64px;resize:none;flex:1;font-family:var(--font-body);line-height:1.45"></textarea>
+        <button onClick="{{ toggleVoice }}" class="btn btn-secondary btn-icon" title="Hold to talk" style="background:{{ voiceBg }};color:{{ voiceFg }}"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" x2="12" y1="19" y2="22"></line></svg></button>
+        <button onClick="{{ send }}" class="btn btn-primary btn-icon" title="Send (Return)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 7-7 7 7"></path><path d="M12 19V5"></path></svg></button>
+      </div>
+      <div style="font-size:11px;color:var(--color-neutral-700)">{{ composerHint }}</div>
+    </div>
+  </div>
+
+  <div style="display:flex;flex-direction:column;min-height:0;min-width:0">
+    <div style="display:flex;align-items:stretch;border-bottom:2px solid var(--color-divider);height:52px">
+      <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="3">
+        <button onClick="{{ t.pick }}" style="all:unset;cursor:pointer;padding:0 20px;display:flex;align-items:center;gap:8px;font-size:14px;font-weight:600;border-right:1px solid var(--color-neutral-300);box-shadow:{{ t.underline }};color:{{ t.color }}">{{ t.label }}<span style="font-size:11px;font-weight:400;color:var(--color-neutral-700)">{{ t.count }}</span></button>
+      </sc-for>
+    </div>
+
+    <sc-if value="{{ tabDoc }}" hint-placeholder-val="{{ true }}">
+    <div style="display:grid;grid-template-columns:minmax(0,1fr) 270px;flex:1;min-height:0">
+      <div style="overflow:auto;padding:24px 32px;background:var(--color-neutral-200)">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+          <span style="font-size:13px;font-weight:600">Board/Q3-Board.docx</span>
+          <span class="tag tag-neutral">Word</span><span class="tag tag-neutral">Template · Board v4</span><span class="tag tag-accent">Styles preserved</span>
+          <sc-if value="{{ exported }}"><span class="tag tag-outline">PDF exported</span></sc-if>
+        </div>
+        <div style="background:var(--color-neutral-100);padding:40px 48px;box-shadow:var(--shadow-sm);max-width:620px">
+          <div style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--color-neutral-700)">Northwind · Confidential</div>
+          <h3 style="margin:8px 0 24px">Q3 2026 Board Report</h3>
+          <h5 style="margin:0 0 8px">2. Financial summary</h5>
+          <p style="font-size:14px;line-height:1.7;text-wrap:pretty">
+            <sc-for list="{{ segs }}" as="g"><span style="background:{{ g.bg }};color:{{ g.fg }};text-decoration:{{ g.deco }};text-underline-offset:3px;margin-right:{{ g.mr }}">{{ g.t }}</span></sc-for>
+          </p>
+          <table class="table" style="font-size:13px;margin:16px 0 28px">
+            <thead><tr><th>€M</th><th>Q2</th><th>Q3</th><th>Δ vs Q2</th></tr></thead>
+            <tbody>
+              <sc-for list="{{ rows }}" as="r" hint-placeholder-count="3">
+                <tr><td>{{ r.k }}</td><td>{{ r.q2 }}</td><td style="background:{{ r.bg }};font-weight:{{ r.w }}">{{ r.q3 }}</td><td style="background:{{ r.bg }}">{{ r.d }}</td></tr>
+              </sc-for>
+            </tbody>
+          </table>
+          <h5 style="margin:0 0 8px">4.2 Regulatory outlook</h5>
+          <sc-if value="{{ secPlaceholder }}"><p style="font-size:14px;line-height:1.7;color:var(--color-neutral-600)">[To be written]</p></sc-if>
+          <sc-if value="{{ secDrafting }}">
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="font-size:12px;color:var(--color-accent-700)">Jarvis is drafting from lane 2 · 14 sources</div>
+              <span style="height:8px;background:var(--color-neutral-300);width:100%;animation:jpulse 1.4s infinite"></span>
+              <span style="height:8px;background:var(--color-neutral-300);width:92%;animation:jpulse 1.4s infinite"></span>
+              <span style="height:8px;background:var(--color-neutral-300);width:64%;animation:jpulse 1.4s infinite"></span>
+            </div>
+          </sc-if>
+          <sc-if value="{{ secText }}">
+            <p style="font-size:14px;line-height:1.7;text-wrap:pretty;background:{{ secBg }};color:{{ secFg }};text-decoration:{{ secDeco }};text-underline-offset:3px">General-purpose AI obligations under the EU AI Act have applied since August 2025<sup style="color:var(--color-accent-700)">[1]</sup>. Most requirements for high-risk systems apply from August 2026<sup style="color:var(--color-accent-700)">[2]</sup>. Northwind’s document assistant is classed as limited risk, which carries transparency duties only<sup style="color:var(--color-accent-700)">[4]</sup>. Legal estimates compliance cost below €40k for FY27.</p>
+          </sc-if>
+        </div>
+      </div>
+      <div style="border-left:2px solid var(--color-divider);overflow:auto;display:flex;flex-direction:column">
+        <div style="padding:16px;border-bottom:2px solid var(--color-divider);display:flex;justify-content:space-between;align-items:center">
+          <h6 style="margin:0">Changes · {{ pendingCount }} open</h6>
+          <sc-if value="{{ hasPending }}"><button onClick="{{ acceptAll }}" class="btn btn-ghost" style="font-size:12px">Accept all</button></sc-if>
+        </div>
+        <sc-if value="{{ noChanges }}">
+          <div style="padding:16px;font-size:13px;color:var(--color-neutral-700);text-wrap:pretty">Nothing edited yet. Every change Jarvis makes lands here first, with the reason and the source.</div>
+        </sc-if>
+        <sc-for list="{{ changes }}" as="c" hint-placeholder-count="0">
+          <div style="padding:14px 16px;border-bottom:1px solid var(--color-neutral-300);display:flex;flex-direction:column;gap:8px">
+            <div style="font-weight:600;font-size:13px">{{ c.title }}</div>
+            <div style="font-size:12px;color:var(--color-neutral-800);text-wrap:pretty">{{ c.why }}</div>
+            <sc-if value="{{ c.open }}">
+              <div style="display:flex;gap:6px">
+                <button onClick="{{ c.accept }}" class="btn btn-primary" style="font-size:12px;padding:6px 10px;justify-content:flex-start">Accept</button>
+                <button onClick="{{ c.reject }}" class="btn btn-secondary" style="font-size:12px;padding:6px 10px;justify-content:flex-start">Reject</button>
+              </div>
+            </sc-if>
+            <sc-if value="{{ c.closed }}">
+              <div style="display:flex;justify-content:space-between;align-items:center"><span class="{{ c.tagCls }}">{{ c.result }}</span><button onClick="{{ c.undo }}" class="btn btn-ghost" style="font-size:12px">Undo</button></div>
+            </sc-if>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ tabResearch }}">
+    <div style="flex:1;overflow:auto;padding:24px 32px;display:flex;flex-direction:column">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px;margin-bottom:16px">
+        <div><h4 style="margin:0">EU AI Act · obligations for SaaS vendors</h4><div style="font-size:13px;color:var(--color-neutral-700)">Lane 2 · web, EUR-Lex and your Legal folder</div></div>
+        <span class="tag tag-accent">{{ readLabel }}</span>
+      </div>
+      <sc-for list="{{ sources }}" as="s" hint-placeholder-count="5">
+        <div style="display:grid;grid-template-columns:32px 1fr auto;gap:12px;padding:14px 0;border-top:2px solid var(--color-divider)">
+          <span style="font-family:var(--font-heading);font-weight:800;font-size:18px;color:var(--color-accent)">{{ s.n }}</span>
+          <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+            <span style="font-weight:600;font-size:14px">{{ s.title }}</span>
+            <span style="font-size:12px;color:var(--color-neutral-700)">{{ s.where }}</span>
+            <span style="font-size:13px;color:var(--color-neutral-900);text-wrap:pretty">{{ s.note }}</span>
+          </div>
+          <span class="{{ s.cls }}" style="align-self:flex-start">{{ s.state }}</span>
+        </div>
+      </sc-for>
+    </div>
+    </sc-if>
+
+    <sc-if value="{{ tabFiles }}">
+    <div style="flex:1;overflow:auto;padding:24px 32px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:16px">
+        <h4 style="margin:0">Files Jarvis touched</h4>
+        <span style="font-size:13px;color:var(--color-neutral-700)">This session · all reversible</span>
+      </div>
+      <sc-if value="{{ noFiles }}"><div style="font-size:13px;color:var(--color-neutral-700)">No files opened yet.</div></sc-if>
+      <table class="table">
+        <thead><tr><th>File</th><th>Action</th><th>Format</th><th>Lane</th></tr></thead>
+        <tbody>
+          <sc-for list="{{ files }}" as="f" hint-placeholder-count="0">
+            <tr><td style="font-weight:600">{{ f.path }}</td><td><span class="{{ f.cls }}">{{ f.action }}</span></td><td>{{ f.fmt }}</td><td style="color:var(--color-neutral-700)">{{ f.lane }}</td></tr>
+          </sc-for>
+        </tbody>
+      </table>
+    </div>
+    </sc-if>
+  </div>
+</div>
+
+<div style="border-top:2px solid var(--color-divider);display:grid;grid-template-columns:260px minmax(0,1fr) auto;align-items:center">
+  <div style="padding:0 16px;height:100%;display:flex;align-items:center;border-right:2px solid var(--color-divider)"><h6 style="margin:0">Checkpoints</h6></div>
+  <div style="display:flex;align-items:center;padding:0 20px;overflow:hidden">
+    <sc-if value="{{ noCps }}"><span style="font-size:12px;color:var(--color-neutral-700)">A checkpoint is saved before every step. Click one to roll back.</span></sc-if>
+    <sc-for list="{{ checkpoints }}" as="k" hint-placeholder-count="0">
+      <button onClick="{{ k.pick }}" style="all:unset;cursor:pointer;display:flex;align-items:center;gap:8px;padding:6px 10px;background:{{ k.bg }};color:{{ k.fg }};white-space:nowrap">
+        <span style="width:8px;height:8px;background:{{ k.dot }}"></span>
+        <span style="font-size:12px;font-weight:600">{{ k.time }}</span>
+        <span style="font-size:12px">{{ k.label }}</span>
+      </button>
+      <span style="width:16px;height:2px;background:var(--color-neutral-400);flex:none"></span>
+    </sc-for>
+  </div>
+  <div style="padding:0 16px">
+    <sc-if value="{{ canRestore }}"><button onClick="{{ restore }}" class="btn btn-secondary" style="justify-content:flex-start">Restore to {{ cpLabel }}</button></sc-if>
+  </div>
+</div>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;autonomy&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[0,1,2],&quot;default&quot;:0,&quot;tsType&quot;:&quot;0|1|2&quot;},&quot;stepMs&quot;:{&quot;editor&quot;:&quot;range&quot;,&quot;min&quot;:400,&quot;max&quot;:4000,&quot;step&quot;:100,&quot;unit&quot;:&quot;ms&quot;,&quot;default&quot;:1600,&quot;tsType&quot;:&quot;number&quot;}}">
+const REQUEST = 'Update the Q3 board report with the September numbers from Finance/Sept-close.xlsx. Keep our Board v4 template, and add a short section 4.2 on the EU AI Act from the research lane.';
+const STEPS = [
+  { text: 'Read Finance/Sept-close.xlsx', log: ['Opened', 'Finance/Sept-close.xlsx · 3 sheets, read-only'], cp: 'Read Sept-close' },
+  { text: 'Update Table 2 and summary in Q3-Board.docx', log: ['Edited', 'Q3-Board.docx · Table 2, 4 cells · 3 wording edits held for review'], cp: 'Table 2 updated' },
+  { text: 'Pull findings from lane 2 · EU AI Act', log: ['Read', '5 remaining sources · 14 of 14 done'], cp: 'Research merged' },
+  { text: 'Draft section 4.2 with citations', log: ['Drafted', 'Section 4.2 · 62 words · 3 citations'], cp: 'Drafted 4.2' }
+];
+const TIMES = ['09:12', '09:13', '09:14', '09:16', '09:17'];
+const CHANGES = [
+  { id: 'c1', at: 2, title: 'Net revenue €4.61M → €4.82M', why: 'Source: Sept-close.xlsx › Summary!C14.' },
+  { id: 'c2', at: 2, title: '“slightly ahead of” → “3.1% above”', why: 'Memory: you prefer exact figures over hedging words.' },
+  { id: 'c3', at: 2, title: 'Added sentence on operating cost', why: 'Past board reports note opex moves above 3%. Source: Summary!C22.' },
+  { id: 'c4', at: 4, title: 'New section 4.2 · Regulatory outlook', why: 'From lane 2. Cites sources 1, 2 and 4.' }
+];
+const SEGS = [
+  { t: 'Net revenue for the quarter was ' }, { t: '€4.61M', k: 'del', c: 'c1' }, { t: '€4.82M', k: 'ins', c: 'c1' },
+  { t: ', ' }, { t: 'slightly ahead of', k: 'del', c: 'c2' }, { t: '3.1% above', k: 'ins', c: 'c2' },
+  { t: ' the forecast set in June. Gross margin held at 61%' },
+  { t: ', while operating cost rose 4% with the Lisbon office opening', k: 'ins', c: 'c3' },
+  { t: '. Cash runway remains above 20 months.' }
+];
+const OTHER_LANES = [
+  { title: 'EU AI Act research', status: 'Reading sources', last: 'Searching EUR-Lex, the Commission’s guidance and your Legal folder. Findings feed section 4.2 of the board report.', when: 'just now' },
+  { title: 'Vendor contract redlines', status: 'Waiting for you · 2 risky clauses', pct: 80, wait: true, last: 'Clauses 7.2 (unlimited liability) and 11.4 (36-month auto-renewal) conflict with your contract playbook. Redlines are drafted in Legal/Acme-MSA-v3.docx. I will not send them without your approval.', when: '14 min ago' },
+  { title: 'File ~/Downloads', status: 'Scheduled · daily 18:00', pct: 0, last: 'Yesterday I moved 41 files into Invoices, Receipts and Archive. Three files I could not classify are in Downloads/Review.', when: 'yesterday' },
+  { title: 'Weekly investor update', status: 'Done · draft in Mail', pct: 100, last: 'The draft is saved in Mail, not sent. Figures match the board report as of 09:14.', when: '1 h ago' }
+];
+const SOURCES = [
+  { n: 1, title: 'Regulation (EU) 2024/1689, Art. 113', where: 'eur-lex.europa.eu · primary law', note: 'Application dates: GPAI obligations from 2 Aug 2025, most remaining provisions from 2 Aug 2026.', used: true },
+  { n: 2, title: 'Annex III · high-risk use cases', where: 'eur-lex.europa.eu · primary law', note: 'Lists the high-risk categories. None match Northwind’s current products.', used: true },
+  { n: 3, title: 'Commission guidelines on AI system definition', where: 'digital-strategy.ec.europa.eu', note: 'Clarifies scope for rule-based tools. Background only.' },
+  { n: 4, title: 'Legal/AI-Act-memo-2026-05.pdf', where: 'Your Legal folder · internal', note: 'Counsel’s view: the document assistant is limited risk, transparency duties only.', used: true },
+  { n: 5, title: 'Industry analysis of compliance cost', where: 'Trade press · secondary', note: 'Cost ranges for SMEs. Not cited: figures are not sourced.', skip: true }
+];
+
+class Component extends DCLogic {
+  state = {
+    sent: false, planShown: false, approved: false, step: 0, running: false,
+    exportOk: false, dec: {}, autonomy: this.props.autonomy ?? 0, tab: 'doc', lane: 0,
+    extra: [], draft: REQUEST, cpSel: null, restored: false, voice: false
+  };
+  scrollRef = React.createRef();
+  componentDidUpdate(_, ps) {
+    if (ps.running !== this.state.running || ps.step !== this.state.step || ps.planShown !== this.state.planShown || ps.extra.length !== this.state.extra.length || ps.exportOk !== this.state.exportOk || ps.sent !== this.state.sent) this.scroll();
+  }
+  componentWillUnmount() { clearTimeout(this.t); }
+  scroll() { setTimeout(() => { const el = document.querySelector('[data-chat-scroll]'); if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }, 40); }
+  speed() { return this.props.stepMs ?? 1600; }
+  run() {
+    clearTimeout(this.t);
+    this.setState({ running: true, restored: false, cpSel: null });
+    const tick = () => {
+      if (this.state.step >= 4) { this.setState({ running: false }); return; }
+      this.t = setTimeout(() => {
+        this.setState(s => {
+          const step = s.step + 1, dec = { ...s.dec };
+          if (s.autonomy > 0) CHANGES.filter(c => c.at === step).forEach(c => { dec[c.id] = 'auto'; });
+          return { step, dec };
+        }, () => {
+          if (this.state.step >= 4) {
+            this.setState({ running: false });
+            if (this.state.autonomy === 2) this.setState({ exportOk: true });
+          } else tick();
+        });
+      }, this.speed());
+    };
+    tick();
+  }
+  send = () => {
+    const text = this.state.draft.trim();
+    if (!text) return;
+    if (!this.state.sent) {
+      this.setState({ sent: true, draft: '' });
+      this.t = setTimeout(() => {
+        this.setState({ planShown: true });
+        if (this.state.autonomy === 2) { this.setState({ approved: true }); this.run(); }
+      }, 1100);
+    } else {
+      this.setState(s => ({ draft: '', extra: [...s.extra, { role: 'user', text }] }));
+      setTimeout(() => this.setState(s => ({ extra: [...s.extra, { role: 'jarvis', text: 'Noted. I have added this to the plan and will flag it in the change list before applying it.' }] })), 900);
+    }
+  };
+  decide(id, v) { this.setState(s => ({ dec: { ...s.dec, [id]: v } })); }
+  renderVals() {
+    const s = this.state;
+    const avail = CHANGES.filter(c => c.at <= s.step);
+    const status = id => { const c = CHANGES.find(x => x.id === id); if (c.at > s.step) return 'none'; return s.dec[id] || 'pending'; };
+    const pending = avail.filter(c => !s.dec[c.id]).length;
+    const done = s.exportOk && s.step >= 4;
+    const isOn = st => st === 'accepted' || st === 'auto';
+
+    const msgs = [];
+    msgs.push({ isText: true, text: 'Good morning. Lane 3 is waiting on two contract clauses, and the Downloads job runs at 18:00. What should I work on?' });
+    if (s.sent) msgs.push({ isUser: true, text: REQUEST });
+    if (s.planShown) {
+      msgs.push({ isText: true, text: s.autonomy === 2 ? 'Running the plan below. I will report each step.' : 'Here is my plan. I will not touch any file until you approve it, and every edit will wait in the change list for review.' });
+      msgs.push({ isPlan: true });
+    }
+    STEPS.forEach((st, i) => { if (s.step > i) msgs.push({ isLog: true, verb: st.log[0], what: st.log[1] }); });
+    if (s.step >= 2) msgs.push({ isText: true, text: 'Table 2 is updated. Net revenue was €4.82M, 3.1% above the June forecast. I left three wording changes in the document for you to review instead of rewriting your paragraph.' });
+    if (s.step >= 4) {
+      msgs.push({ isText: true, text: 'Section 4.2 is drafted with three citations. I skipped one trade-press source because its cost figures are unsourced.' });
+      msgs.push({ isGate: true });
+    }
+    if (done) {
+      msgs.push({ isLog: true, verb: 'Exported', what: 'Board/Out/Q3-Board.pdf · 12 pages · fonts embedded' });
+      msgs.push({ isText: true, text: 'Exported. The PDF uses the Board v4 template and tracked changes are flattened. Should I send it to the board distribution list or leave it in Board/Out?' });
+    }
+    s.extra.forEach(m => msgs.push(m.role === 'user' ? { isUser: true, text: m.text } : { isText: true, text: m.text }));
+    const sig = `${msgs.length}|${s.step}|${s.running}`;
+    if (sig !== this._sig) { this._sig = sig; this.scroll(); }
+
+    const planSteps = [...STEPS.map((st, i) => {
+      const d = s.step > i, r = s.running && s.step === i;
+      return { text: st.text, note: d ? 'done' : r ? 'working' : '', fill: d ? 'var(--color-text)' : r ? 'var(--color-accent)' : 'transparent', border: d || r ? '0' : '1.5px solid var(--color-neutral-600)', anim: r ? 'jpulse 1s infinite' : 'none', color: d ? 'var(--color-neutral-700)' : 'var(--color-text)' };
+    }), { text: 'Export PDF to Board/Out', note: done ? 'done' : 'needs your approval', fill: done ? 'var(--color-text)' : 'transparent', border: done ? '0' : '2px solid var(--color-accent)', anim: 'none', color: 'var(--color-text)' }];
+
+    const segs = SEGS.filter(g => {
+      if (!g.c) return true; const st = status(g.c);
+      if (st === 'none') return g.k === 'del';
+      if (st === 'rejected') return g.k === 'del';
+      if (isOn(st)) return g.k === 'ins';
+      return true;
+    }).map(g => {
+      const pend = g.c && status(g.c) === 'pending';
+      if (pend && g.k === 'ins') return { t: g.t, bg: 'var(--color-accent-100)', fg: 'var(--color-accent-800)', deco: 'underline var(--color-accent)', mr: '0' };
+      if (pend && g.k === 'del') return { t: g.t, bg: 'transparent', fg: 'var(--color-neutral-600)', deco: 'line-through', mr: '4px' };
+      return { t: g.t, bg: 'transparent', fg: 'inherit', deco: 'none', mr: '0' };
+    });
+    const tUpd = s.step >= 2, hl = tUpd && !done ? 'var(--color-accent-100)' : 'transparent';
+    const rows = [
+      { k: 'Net revenue', q2: '4.37', q3: tUpd ? '4.82' : '—', d: tUpd ? '+10.3%' : '—', bg: hl, w: tUpd ? 600 : 400 },
+      { k: 'Gross margin', q2: '61%', q3: tUpd ? '61%' : '—', d: tUpd ? '0 pts' : '—', bg: 'transparent', w: 400 },
+      { k: 'Operating cost', q2: '2.10', q3: tUpd ? '2.18' : '—', d: tUpd ? '+4.0%' : '—', bg: hl, w: tUpd ? 600 : 400 }
+    ];
+    const c4 = status('c4');
+
+    const lanes = [{ title: 'Q3 Board Report', status: done ? 'Done · PDF exported' : !s.sent ? 'Idle' : !s.approved ? 'Waiting for plan approval' : s.running ? `Working · step ${s.step + 1} of 5` : pending ? `${pending} changes to review` : s.step >= 4 ? 'Waiting for export approval' : 'Paused', pct: done ? 100 : s.step * 20, wait: (s.planShown && !s.approved) || (!s.running && s.step >= 4 && !done) }, ...OTHER_LANES.map((l, i) => i === 0 ? { ...l, pct: s.step >= 3 ? 100 : 64, status: s.step >= 3 ? 'Done · 14 of 14 sources' : 'Reading 9 of 14 sources' } : l)];
+
+    const files = [];
+    if (s.step >= 1) files.push({ path: 'Finance/Sept-close.xlsx', action: 'Read', cls: 'tag tag-neutral', fmt: 'Excel', lane: 'Board report' });
+    if (s.step >= 2) files.push({ path: 'Board/Q3-Board.docx', action: 'Edited · tracked', cls: 'tag tag-accent', fmt: 'Word', lane: 'Board report' });
+    if (s.step >= 3) files.push({ path: 'Legal/AI-Act-memo-2026-05.pdf', action: 'Read', cls: 'tag tag-neutral', fmt: 'PDF', lane: 'EU AI Act' });
+    if (done) files.push({ path: 'Board/Out/Q3-Board.pdf', action: 'Created', cls: 'tag tag-outline', fmt: 'PDF', lane: 'Board report' });
+    files.push({ path: 'Legal/Acme-MSA-v3.docx', action: 'Redlined · held', cls: 'tag tag-accent', fmt: 'Word', lane: 'Contract redlines' });
+
+    const cps = s.approved ? Array.from({ length: s.step + 1 }, (_, i) => i) : [];
+    const selCp = s.cpSel;
+    const tabsDef = [['doc', 'Document', pending ? `${pending} to review` : ''], ['research', 'Research', s.step >= 3 ? '14 sources' : '9 / 14'], ['files', 'Files', `${files.length}`]];
+    const thinking = (s.sent && !s.planShown) || s.running;
+
+    return {
+      runningLabel: `${s.running ? 4 : 3} lanes active`,
+      autonomyOpts: ['Ask every change', 'Ask if risky', 'Autonomous'].map((label, i) => ({ label, bg: s.autonomy === i ? 'var(--color-text)' : 'transparent', fg: s.autonomy === i ? 'var(--color-bg)' : 'var(--color-text)', pick: () => this.setState({ autonomy: i }) })),
+      lanes: lanes.map((l, i) => ({ ...l, pct: `${l.pct ?? 0}%`, bg: s.lane === i ? 'var(--color-surface)' : 'transparent', bar: s.lane === i ? 'var(--color-accent)' : 'transparent', fill: l.wait ? 'var(--color-accent)' : 'var(--color-text)', select: () => this.setState({ lane: i, tab: i === 1 ? 'research' : s.tab }) })),
+      scopes: [
+        { path: 'Finance/', mode: 'Read only', cls: 'tag tag-neutral' },
+        { path: 'Board/', mode: 'Edit · ask', cls: 'tag tag-accent' },
+        { path: 'Legal/', mode: 'Edit · ask', cls: 'tag tag-accent' },
+        { path: 'Personal/', mode: 'No access', cls: 'tag tag-outline' }
+      ],
+      memory: ['Exact figures, no hedging words', 'Board documents use template Board v4', 'Never email outside @northwind.eu'],
+      lane: { num: s.lane + 1, ...lanes[s.lane] },
+      isMain: s.lane === 0, notMain: s.lane !== 0,
+      backToMain: () => this.setState({ lane: 0 }),
+      scrollRef: this.scrollRef, messages: msgs, planSteps,
+      planProgress: `${Math.min(s.step + (done ? 1 : 0), 5)} of 5`,
+      showPlanActions: s.planShown && !s.approved,
+      showResume: s.approved && !s.running && s.step < 4 && s.restored,
+      resumeStep: s.step + 1,
+      approvePlan: () => { this.setState({ approved: true }); this.run(); },
+      resume: () => this.run(),
+      exportBlocked: pending > 0 || done, gateNote: done ? 'Approved' : pending ? `Review ${pending} open change${pending > 1 ? 's' : ''} first` : 'All changes reviewed',
+      approveExport: () => this.setState({ exportOk: true }),
+      thinking, thinkingText: !s.planShown ? 'Reading the request and checking folder access…' : `Step ${s.step + 1}: ${STEPS[s.step]?.text ?? ''}`,
+      showSuggest: !s.sent, draft: s.draft,
+      onDraft: e => this.setState({ draft: e.target.value }),
+      onKey: e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.send(); } },
+      send: this.send,
+      toggleVoice: () => this.setState(v => ({ voice: !v.voice })),
+      voiceBg: s.voice ? 'var(--color-accent)' : 'transparent', voiceFg: s.voice ? 'var(--color-bg)' : 'var(--color-text)',
+      composerHint: s.voice ? 'Listening… release to send' : 'Return to send · ⌥ Space summons Jarvis from the menu bar in any app',
+      tabs: tabsDef.map(([id, label, count]) => ({ label, count, pick: () => this.setState({ tab: id }), underline: s.tab === id ? 'inset 0 -3px 0 var(--color-accent)' : 'none', color: s.tab === id ? 'var(--color-text)' : 'var(--color-neutral-700)' })),
+      tabDoc: s.tab === 'doc', tabResearch: s.tab === 'research', tabFiles: s.tab === 'files',
+      exported: done, segs, rows,
+      secPlaceholder: s.step < 3 || (s.step === 3 && !s.running) || c4 === 'rejected', secDrafting: s.step === 3 && s.running, secText: s.step >= 4 && c4 !== 'rejected',
+      secBg: c4 === 'pending' ? 'var(--color-accent-100)' : 'transparent', secFg: c4 === 'pending' ? 'var(--color-accent-800)' : 'inherit', secDeco: c4 === 'pending' ? 'underline var(--color-accent)' : 'none',
+      pendingCount: pending, hasPending: pending > 1, noChanges: avail.length === 0,
+      acceptAll: () => this.setState(v => { const dec = { ...v.dec }; avail.forEach(c => { if (!dec[c.id]) dec[c.id] = 'accepted'; }); return { dec }; }),
+      changes: avail.map(c => { const st = s.dec[c.id]; return { ...c, open: !st, closed: !!st, result: st === 'accepted' ? 'Accepted' : st === 'auto' ? 'Auto-applied' : 'Rejected', tagCls: st === 'rejected' ? 'tag tag-neutral' : 'tag tag-accent', accept: () => this.decide(c.id, 'accepted'), reject: () => this.decide(c.id, 'rejected'), undo: () => this.decide(c.id, undefined) }; }),
+      readLabel: s.step >= 3 ? '14 of 14 read' : '9 of 14 read',
+      sources: SOURCES.map(x => ({ ...x, state: x.skip ? 'Not cited' : x.used && s.step >= 4 ? `Cited in 4.2` : 'Read', cls: x.skip ? 'tag tag-outline' : x.used && s.step >= 4 ? 'tag tag-accent' : 'tag tag-neutral' })),
+      files, noFiles: files.length === 0,
+      noCps: cps.length === 0,
+      checkpoints: cps.map(i => ({ time: TIMES[i], label: i === 0 ? 'Before edits' : STEPS[i - 1].cp, dot: selCp === i ? 'var(--color-accent)' : 'var(--color-text)', bg: selCp === i ? 'var(--color-accent-100)' : 'transparent', fg: 'var(--color-text)', pick: () => this.setState({ cpSel: selCp === i ? null : i }) })),
+      canRestore: selCp !== null && selCp < s.step && !s.running,
+      cpLabel: selCp !== null ? TIMES[selCp] : '',
+      restore: () => this.setState(v => {
+        const dec = {}; Object.keys(v.dec).forEach(k => { if (CHANGES.find(c => c.id === k).at <= v.cpSel) dec[k] = v.dec[k]; });
+        return { step: v.cpSel, dec, exportOk: false, cpSel: null, restored: true, tab: 'doc' };
+      })
+    };
+  }
+}
+</script>
+</body>
+</html>
