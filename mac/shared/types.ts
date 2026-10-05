@@ -82,7 +82,7 @@ export interface Change {
 export interface Checkpoint { id: string; laneId: string; stepIndex: number; label: string; ts: number }
 
 export type TouchAction = 'read' | 'edited' | 'created' | 'moved' | 'deleted' | 'held' | 'denied';
-export interface FileTouch { laneId: string; laneTitle: string; path: string; action: TouchAction; format: string; ts: number }
+export interface FileTouch { laneId: string; laneTitle: string; path: string; action: TouchAction; format: string; ts: number; detail?: string }
 
 export interface AuditEntry { ts: number; laneId: string; tool: string; path: string; result: string }
 
@@ -122,6 +122,7 @@ export type JarvisEvent =
 
 export interface JarvisApi {
   platform: string;
+  version: string;
   getUiState(): Promise<UiState>;
   setUiState(patch: Partial<UiState>): Promise<UiState>;
   listLanes(): Promise<Lane[]>;

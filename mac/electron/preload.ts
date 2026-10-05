@@ -5,6 +5,7 @@ const call = (channel: string) => (...args: unknown[]) => ipcRenderer.invoke(cha
 
 const api: JarvisApi = {
   platform: process.platform,
+  version: (process.argv.find((a) => a.startsWith('--jarvis-version=')) ?? '').split('=')[1] ?? '',
   getUiState: call('ui:get') as JarvisApi['getUiState'],
   setUiState: call('ui:set') as JarvisApi['setUiState'],
   listLanes: call('lanes:list') as JarvisApi['listLanes'],

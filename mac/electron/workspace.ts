@@ -1,6 +1,7 @@
 // The only way the agent touches the disk: scope checks, file tools, staged changes, checkpoints.
 import { createHash } from 'crypto';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import JSZip from 'jszip';
 import type { Db } from './db';
@@ -20,6 +21,35 @@ const SKIP_DIRS = new Set(['node_modules', '.git', '.jarvis']);
 const MAX_READ = 60_000;
 const RISKY_PATH = /financ|legal|contract|invoice|budget|board|payroll|tax/i;
 const DIR_MARK = 'dir:';
+
+/** Local models sometimes use other names for the same tool or argument. */
+const TOOL_ALIASES: Record<string, string> = {
+  mkdir: 'create_folder', make_folder: 'create_folder', create_directory: 'create_folder', make_directory: 'create_folder', new_folder: 'create_folder',
+  list_files: 'list_dir', list_folder: 'list_dir', ls: 'list_dir', list_directory: 'list_dir',
+  read: 'read_file', open_file: 'read_file', write: 'write_file', create_file: 'write_file', save_file: 'write_file',
+  edit_file: 'replace_text', rename_file: 'move_file', move: 'move_file', rename: 'move_file', remove_file: 'delete_file', delete: 'delete_file',
+  search: 'search_files', find_files: 'search_files',
+};
+const PATH_TOOLS = new Set(['read_file', 'write_file', 'replace_text', 'delete_file', 'create_folder']);
+const ARG_ALIASES: Record<string, string[]> = {
+  path: ['path', 'file', 'file_path', 'filepath', 'filename', 'file_name', 'folder', 'folder_path', 'folder_name', 'dir', 'directory', 'directory_path', 'name', 'target_path'],
+  from: ['from', 'source', 'src', 'old_path', 'from_path'],
+  to: ['to', 'destination', 'dest', 'new_path', 'to_path', 'target'],
+  content: ['content', 'contents', 'text', 'body', 'data'],
+  find: ['find', 'old', 'old_text', 'search', 'old_string'],
+  replace: ['replace', 'new', 'new_text', 'replacement', 'new_string'],
+  query: ['query', 'q', 'pattern', 'term', 'keyword'],
+  reason: ['reason', 'why', 'explanation', 'description'],
+};
+function normaliseArgs(a: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...a };
+  for (const [key, names] of Object.entries(ARG_ALIASES)) {
+    if (out[key] != null && out[key] !== '') continue;
+    const hit = names.find((n) => a[n] != null && a[n] !== '');
+    if (hit) out[key] = a[hit];
+  }
+  return out;
+}
 
 export const formatOf = (p: string) => {
   const ext = path.extname(p).toLowerCase();
@@ -74,6 +104,11 @@ export class Workspace {
     this.changed('scopes');
   }
 
+  private isDir(rel: string) {
+    const root = this.root();
+    try { return !!root && fs.statSync(path.join(root, rel)).isDirectory(); } catch { return false; }
+  }
+
   modeFor(scopePath: string): ScopeMode {
     return this.db.listScopes().find((s) => s.path === scopePath)?.mode ?? 'none';
   }
@@ -86,7 +121,14 @@ export class Workspace {
     const root = this.root();
     if (!root) throw new WorkspaceError('No workspace folder is set. Choose one with "Workspace" in the title bar.');
     const rootReal = fs.realpathSync(root);
-    const cleaned = String(rel ?? '').trim().replace(/^~\//, '').replace(/^(\.\/)+/, '') || '.';
+    let cleaned = String(rel ?? '').trim().replace(/^["'`]|["'`]$/g, '').replace(/^(\.\/)+/, '') || '.';
+    if (cleaned === '~' || cleaned.startsWith('~/')) cleaned = path.join(os.homedir(), cleaned.slice(1));
+    // Models often repeat the workspace's own name ("MyFolder/Notes" when MyFolder is the workspace).
+    const own = path.basename(rootReal);
+    const head = cleaned.split(/[\\/]/)[0];
+    if (!path.isAbsolute(cleaned) && head === own && !fs.existsSync(path.join(rootReal, own))) {
+      cleaned = cleaned.slice(own.length).replace(/^[\\/]+/, '') || '.';
+    }
     const candidate = path.isAbsolute(cleaned) ? cleaned : path.resolve(rootReal, cleaned);
     const real = realpathLoose(candidate);
     if (real !== rootReal && !real.startsWith(rootReal + path.sep)) {
@@ -101,18 +143,26 @@ export class Workspace {
     const known = this.db.listScopes().some((x) => x.path === scope);
     const mode = known || !scope || fs.existsSync(path.join(rootReal, scope)) ? this.modeFor(scope) : this.modeFor('');
     const label = scope ? `${scope}/` : 'the main folder (top level)';
-    if (op === 'read' && mode === 'none') throw new ScopeError(`Jarvis has no access to ${label}.`, scope, 'read');
+    const fix = scope ? '' : ' Set "Main folder" in Folder access, or use Set all.';
+    if (op === 'read' && mode === 'none') throw new ScopeError(`Jarvis has no access to ${label}${relative && scope !== relative ? ` (needed for ${relative})` : ''}.${fix}`, scope, 'read');
     if (op === 'write' && (mode === 'none' || mode === 'read')) {
-      throw new ScopeError(`${label} is ${mode === 'read' ? 'read only' : 'not accessible'}, so Jarvis can't change ${relative || 'it'}.`, scope, 'edit_ask');
+      throw new ScopeError(`${label} is ${mode === 'read' ? 'read only' : 'not accessible'}, so Jarvis can't change ${relative || 'it'}.${fix}`, scope, 'edit_ask');
     }
     return { abs: real, rel: relative, scope };
   }
 
   /* ---------- tools ---------- */
 
-  async exec(name: string, args: Record<string, unknown>, ctx: ToolContext): Promise<{ result: string; log?: [string, string] }> {
+  async exec(rawName: string, rawArgs: Record<string, unknown>, ctx: ToolContext): Promise<{ result: string; log?: [string, string] }> {
+    const name = TOOL_ALIASES[rawName] ?? rawName;
+    const args = normaliseArgs(rawArgs ?? {});
     const p = (k: string) => String(args[k] ?? '');
     const target = p('path') || p('from') || '.';
+    if (PATH_TOOLS.has(name) && !p('path')) {
+      const msg = `${name} needs a "path" argument, e.g. {"path": "Notes/2026"}.`;
+      this.db.addAudit(ctx.laneId, name, '(none)', `error: ${msg}`);
+      throw new WorkspaceError(msg);
+    }
     try {
       const out = await this.run(name, args, ctx);
       this.db.addAudit(ctx.laneId, name, target, 'ok');
@@ -120,7 +170,7 @@ export class Workspace {
     } catch (e) {
       const denied = e instanceof ScopeError;
       this.db.addAudit(ctx.laneId, name, target, `${denied ? 'denied' : 'error'}: ${(e as Error).message}`);
-      if (denied) { this.touch(ctx.laneId, target, 'denied'); }
+      if (denied) { this.touch(ctx.laneId, target, 'denied', (e as Error).message); }
       throw e;
     }
   }
@@ -461,8 +511,10 @@ export class Workspace {
     return { stepIndex: cp.stepIndex, laneId: cp.laneId, label: hhmm(cp.ts) };
   }
 
-  touch(laneId: string, rel: string, action: TouchAction) {
-    this.db.addTouch(laneId, rel, action, formatOf(rel.split(' → ')[0]));
+  touch(laneId: string, rel: string, action: TouchAction, detail = '') {
+    const shown = rel === '.' || rel === '' ? '(main folder)' : rel;
+    const isDir = rel.endsWith('/') || rel === '.' || rel === '' || (!path.extname(rel) && this.isDir(rel));
+    this.db.addTouch(laneId, shown, action, isDir ? 'Folder' : formatOf(rel.split(' → ')[0]), detail);
     this.changed('touches');
   }
 }

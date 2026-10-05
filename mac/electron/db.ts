@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS checkpoint_files (
 );
 CREATE TABLE IF NOT EXISTS touches (
   lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE, path TEXT NOT NULL,
-  action TEXT NOT NULL, format TEXT NOT NULL, ts INTEGER NOT NULL
+  action TEXT NOT NULL, format TEXT NOT NULL, ts INTEGER NOT NULL, detail TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS audit (ts INTEGER NOT NULL, lane_id TEXT NOT NULL, tool TEXT NOT NULL, path TEXT NOT NULL, result TEXT NOT NULL);
 `;
@@ -56,6 +56,9 @@ export class Db {
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec(SCHEMA);
+    // 0.3.1 databases have no touches.detail column yet.
+    const cols = this.db.prepare('PRAGMA table_info(touches)').all() as { name: string }[];
+    if (!cols.some((c) => c.name === 'detail')) this.db.exec("ALTER TABLE touches ADD COLUMN detail TEXT NOT NULL DEFAULT ''");
   }
 
   close() { this.db.close(); }
@@ -231,12 +234,12 @@ export class Db {
   }
 
   /* ---------- file activity and audit ---------- */
-  addTouch(laneId: string, path: string, action: TouchAction, format: string) {
-    this.run('INSERT INTO touches(lane_id, path, action, format, ts) VALUES(?,?,?,?,?)', laneId, path, action, format, Date.now());
+  addTouch(laneId: string, path: string, action: TouchAction, format: string, detail = '') {
+    this.run('INSERT INTO touches(lane_id, path, action, format, ts, detail) VALUES(?,?,?,?,?,?)', laneId, path, action, format, Date.now(), detail);
   }
   listTouches(): FileTouch[] {
     return this.all(`SELECT t.*, l.title AS lane_title FROM touches t JOIN lanes l ON l.id = t.lane_id ORDER BY t.ts DESC LIMIT 500`).map((r) => ({
-      laneId: String(r.lane_id), laneTitle: String(r.lane_title), path: String(r.path), action: r.action as TouchAction, format: String(r.format), ts: Number(r.ts),
+      laneId: String(r.lane_id), laneTitle: String(r.lane_title), path: String(r.path), action: r.action as TouchAction, format: String(r.format), ts: Number(r.ts), detail: String(r.detail ?? ''),
     }));
   }
   addAudit(laneId: string, tool: string, path: string, result: string) {

@@ -40,7 +40,7 @@ export function SettingsDialog() {
   return (
     <div className="dialog-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) st.openSettings(false); }}>
       <div className="dialog settings" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-        <div className="dialog-title" id="settings-title">Settings</div>
+        <div className="dialog-title settings-title" id="settings-title">Settings <span className="version">JARVIS {window.jarvis?.version}</span></div>
 
         <section className="settings-section">
           <h6>AI engine</h6>

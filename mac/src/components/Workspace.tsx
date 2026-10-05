@@ -136,7 +136,7 @@ function FilesTab({ touches }: { touches: FileTouch[] }) {
           <tbody>
             {touches.map((t, i) => (
               <tr key={i}>
-                <td>{t.path}</td>
+                <td>{t.path}{t.action === 'denied' && t.detail ? <div className="touch-detail">{t.detail}</div> : null}</td>
                 <td><span className={`tag tag-${ACTION_TONE[t.action]}`}>{ACTION_LABEL[t.action]}</span></td>
                 <td>{t.format}</td>
                 <td className="muted">{t.laneTitle}</td>

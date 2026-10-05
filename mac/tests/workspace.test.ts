@@ -238,3 +238,34 @@ describe('folders', () => {
     expect(read('Board/new/a.md')).toBe('a');
   });
 });
+
+describe('what local models actually send', () => {
+  it('accepts other names for tools and arguments', async () => {
+    await ws.exec('mkdir', { folder: 'Board/2027', reason: 'r' }, ctx('autonomous'));
+    expect(fs.statSync(path.join(root, 'Board/2027')).isDirectory()).toBe(true);
+    await ws.exec('create_file', { file_path: 'Board/a.md', text: 'hello', why: 'r' }, ctx('autonomous'));
+    expect(read('Board/a.md')).toBe('hello');
+    expect((await ws.exec('read', { filename: 'Board/a.md' }, ctx())).result).toBe('hello');
+  });
+
+  it('a missing path is a clear error, not a block on the main folder', async () => {
+    await expect(ws.exec('create_folder', { reason: 'r' }, ctx())).rejects.toThrow(/needs a "path"/);
+    expect(db.listTouches().some((t) => t.action === 'denied')).toBe(false);
+  });
+
+  it('drops a repeated workspace name and expands ~', async () => {
+    const own = path.basename(root);
+    await ws.exec('write_file', { path: `${own}/Board/b.md`, content: 'b', reason: 'r' }, ctx('autonomous'));
+    expect(read('Board/b.md')).toBe('b');
+    await expect(ws.exec('read_file', { path: '~/somewhere.txt' }, ctx())).rejects.toThrow(/outside the workspace/);
+  });
+
+  it('records why something was blocked, naming the main folder', async () => {
+    await expect(ws.exec('write_file', { path: 'notes.md', content: 'x', reason: 'r' }, ctx())).rejects.toThrow(/Set "Main folder"/);
+    const t = db.listTouches().find((x) => x.action === 'denied')!;
+    expect(t.path).toBe('notes.md');
+    expect(t.detail).toMatch(/main folder/);
+    await expect(ws.exec('read_file', { path: '.' }, ctx())).rejects.toThrow(ScopeError);
+    expect(db.listTouches()[0]).toMatchObject({ path: '(main folder)', format: 'Folder' });
+  });
+});

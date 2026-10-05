@@ -49,6 +49,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      additionalArguments: [`--jarvis-version=${app.getVersion()}`],
     },
   });
   const w = win;
