@@ -1,10 +1,10 @@
 {
   "name": "jarvis-workspace",
   "productName": "JARVIS",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "JARVIS: a macOS desktop agent for documents, folders and research.",
   "private": true,
-  "main": "dist-electron/main.js",
+  "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "concurrently -k -n vite,electron \"vite\" \"wait-on tcp:5173 && tsc -p tsconfig.electron.json && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
     "build": "tsc -p tsconfig.electron.json && tsc --noEmit -p tsconfig.json && vite build",

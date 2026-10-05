@@ -8,7 +8,7 @@ import './styles/app.css';
 import { App } from './App';
 import { useStore } from './store';
 
-void useStore.getState().hydrate();
+void useStore.getState().init();
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

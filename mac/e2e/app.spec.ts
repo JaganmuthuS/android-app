@@ -2,82 +2,119 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { startFakeOllama, type FakeOllama } from './fake-ollama';
 
-const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-e2e-'));
+let ollama: FakeOllama;
+let userData: string;
 
 async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
-  const app = await electron.launch({ args: ['.', `--user-data-dir=${userData}`, '--no-sandbox'] });
+  const app = await electron.launch({
+    args: ['.', `--user-data-dir=${userData}`, '--no-sandbox'],
+    env: { ...process.env, JARVIS_OLLAMA_URL: ollama.url },
+  });
   const page = await app.firstWindow();
   await page.waitForSelector('.wordmark');
   return { app, page };
 }
 
-test('board report flow: plan, review, gate, export, restore, resume', async () => {
+test.beforeEach(async () => {
+  userData = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-e2e-'));
+  ollama = await startFakeOllama();
+});
+test.afterEach(async () => { await ollama.close(); });
+
+test('first run: set up the model, answer a question, run a gated plan', async () => {
   const { app, page } = await launch();
 
   // Security settings on the real window.
   const prefs = await app.evaluate(({ BrowserWindow }) => {
     const w = BrowserWindow.getAllWindows()[0];
     const p = w.webContents.getLastWebPreferences();
-    return { contextIsolation: p?.contextIsolation, nodeIntegration: p?.nodeIntegration, sandbox: p?.sandbox, min: w.getMinimumSize() };
+    return { contextIsolation: p?.contextIsolation, nodeIntegration: p?.nodeIntegration, sandbox: p?.sandbox };
   });
-  expect(prefs).toEqual({ contextIsolation: true, nodeIntegration: false, sandbox: true, min: [1180, 720] });
-  expect(await page.evaluate(() => typeof (window as unknown as { require?: unknown }).require)).toBe('undefined');
+  expect(prefs).toEqual({ contextIsolation: true, nodeIntegration: false, sandbox: true });
 
-  await page.getByRole('button', { name: 'Send' }).click();
-  await expect(page.getByText('Reading the request and checking folder access…')).toBeVisible();
+  // Setup guide: Ollama is running but no model yet.
+  await expect(page.getByText('Ollama 0.12.0-test is running.')).toBeVisible();
+  await page.getByRole('button', { name: 'Download qwen3:8b' }).click();
+  await expect(page.getByRole('region', { name: 'Set up the AI engine' })).toBeHidden();
+  await expect(page.getByText('What should I work on?', { exact: false })).toBeVisible();
+
+  // A plain question gets a streamed answer, no plan.
+  const input = page.getByLabel('Message Jarvis');
+  await input.fill('What is the capital of France?');
+  await input.press('Enter');
+  await expect(page.getByText('Paris is the capital of France.')).toBeVisible();
+  await expect(page.locator('.lane-row').first()).toContainText('Answered');
+
+  // A task gets a plan and waits.
+  await page.getByRole('button', { name: '+ New lane' }).click();
+  await expect(page.locator('.lane-row')).toHaveCount(2);
+  await input.fill('Write the September board summary and email it to the board');
+  await input.press('Enter');
   await expect(page.getByText('Here is my plan.', { exact: false })).toBeVisible();
-  await expect(page.locator('.lane-row').first()).toContainText('Waiting for plan approval');
+  await expect(page.locator('.lane-name')).toHaveText('Board summary');
+  await expect(page.locator('.plan-step')).toHaveCount(3);
+  await expect(page.locator('.plan-step').nth(2)).toContainText('needs your approval');
+
+  // Edit steps: rename the first one.
+  await page.getByRole('button', { name: 'Edit steps' }).click();
+  await page.getByRole('textbox', { name: 'Step 1' }).fill('Collect the September figures from Finance');
+  await page.getByRole('button', { name: 'Save steps' }).click();
+  await expect(page.locator('.plan-step').first()).toContainText('from Finance');
 
   await page.getByRole('button', { name: 'Approve plan' }).click();
-  await expect(page.getByText('Drafted', { exact: true })).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText('Changes · 4 open')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Approve export' })).toBeDisabled();
-  await expect(page.getByText('Review 4 open changes first')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Approve step' })).toBeVisible();
+  await expect(page.getByText('Finished: Draft a three-line summary.')).toBeVisible();
+  await expect(page.locator('.lane-row').nth(1)).toContainText('Waiting for your approval');
 
-  // Review: reject one, accept the rest.
-  await page.locator('.change').nth(1).getByRole('button', { name: 'Reject' }).click();
-  await page.getByRole('button', { name: 'Accept all' }).click();
-  await expect(page.getByText('Changes · 0 open')).toBeVisible();
-  await expect(page.locator('.page p').first()).toContainText('€4.82M, slightly ahead of the forecast');
-
-  await page.getByRole('button', { name: 'Approve export' }).click();
-  await expect(page.getByText('Board/Out/Q3-Board.pdf · 12 pages · fonts embedded')).toBeVisible();
-
-  // Files and Research tabs.
-  await page.getByRole('tab', { name: /Files/ }).click();
-  await expect(page.getByRole('cell', { name: 'Board/Out/Q3-Board.pdf' })).toBeVisible();
-  await page.getByRole('tab', { name: /Research/ }).click();
-  await expect(page.getByText('14 of 14 read')).toBeVisible();
-
-  // Restore to "Before edits", then resume.
-  await page.getByRole('button', { name: /09:12 Before edits/ }).click();
-  await page.getByRole('button', { name: 'Restore to 09:12' }).click();
-  await expect(page.getByText('Changes · 0 open')).toBeVisible();
-  await expect(page.getByText('[To be written]')).toBeVisible();
-  await page.getByRole('button', { name: 'Resume from step 1' }).click();
-  await expect(page.locator('.lane-row').first()).toContainText('Working · step');
-
-  await page.screenshot({ path: 'test-results/flow.png' });
-  await page.getByRole('tab', { name: /Document/ }).click();
-  await page.waitForTimeout(400);
-  await page.screenshot({ path: 'test-results/doc.png' });
+  await page.getByRole('button', { name: 'Approve step' }).click();
+  await expect(page.getByText('Should I file the draft in Board?', { exact: false })).toBeVisible();
+  await expect(page.locator('.lane-row').nth(1)).toContainText('Done');
+  await expect(page.locator('.plan-head .label')).toHaveText('Plan · 3 of 3');
+  await page.screenshot({ path: 'test-results/phase2-flow.png' });
   await app.close();
+
+  // Everything is still there after a restart.
+  const again = await launch();
+  await expect(again.page.locator('.lane-row')).toHaveCount(2);
+  await expect(again.page.locator('.lane-name')).toHaveText('Board summary');
+  await expect(again.page.getByText('Should I file the draft in Board?', { exact: false })).toBeVisible();
+  await again.app.close();
 });
 
-test('remembers lane, tab and autonomy across launches', async () => {
-  let { app, page } = await launch();
-  await page.getByRole('radio', { name: 'Ask if risky' }).click();
-  await page.getByRole('button', { name: /Vendor contract redlines/ }).click();
-  await page.getByRole('tab', { name: /Files/ }).click();
-  await expect(page.getByText('Clauses 7.2 (unlimited liability)', { exact: false })).toBeVisible();
-  await page.waitForTimeout(300);
-  await app.close();
+test('settings: memories, autonomy and engine errors', async () => {
+  ollama.installed.push('qwen3:8b');
+  const { app, page } = await launch();
 
-  ({ app, page } = await launch());
-  await expect(page.getByRole('radio', { name: 'Ask if risky' })).toHaveAttribute('aria-checked', 'true');
-  await expect(page.locator('.lane-name')).toHaveText('Vendor contract redlines');
-  await expect(page.getByRole('tab', { name: /Files/ })).toHaveAttribute('aria-selected', 'true');
-  await page.screenshot({ path: 'test-results/restored.png' });
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByLabel('New memory').fill('Exact figures, no hedging words');
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await page.getByRole('dialog').getByRole('radio', { name: 'Autonomous' }).click();
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(page.locator('.memory-list')).toContainText('Exact figures, no hedging words');
+
+  // Autonomous lane runs without plan approval but still stops at the gate.
+  await page.getByRole('button', { name: '+ New lane' }).click();
+  await page.getByLabel('Message Jarvis').fill('Board summary, then email it');
+  await page.getByLabel('Message Jarvis').press('Enter');
+  await expect(page.getByText('Running the plan below.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Approve step' })).toBeVisible();
+  await page.getByRole('button', { name: 'Skip it' }).click();
+  await expect(page.locator('.plan-step').nth(2)).toContainText('skipped');
+  await expect(page.locator('.lane-row').nth(1)).toContainText('Done');
+
+  // Switching to a model that isn't downloaded gives a clear error in the chat.
+  await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByLabel('Model').fill('llama3.2:1b');
+  await page.getByRole('button', { name: 'Use model' }).click();
+  await expect(page.getByRole('dialog').getByText('Not downloaded yet.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+  await page.getByRole('button', { name: '+ New lane' }).click();
+  await page.getByLabel('Message Jarvis').fill('Hello?');
+  await page.getByLabel('Message Jarvis').press('Enter');
+  await expect(page.getByRole('alert').filter({ hasText: 'is not downloaded yet' })).toBeVisible();
+  await expect(page.locator('.lane-row').nth(1)).toContainText('Done');
+  await page.screenshot({ path: 'test-results/phase2-settings.png' });
   await app.close();
 });

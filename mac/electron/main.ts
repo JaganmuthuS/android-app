@@ -1,32 +1,24 @@
-import { app, BrowserWindow, ipcMain, screen, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, Notification, screen, shell } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Agent } from './agent';
+import { NEW_LANE_TITLE } from './agent';
+import { Db } from './db';
+import { Ollama } from './ollama';
+import type { JarvisEvent, Settings, UiState } from '../shared/types';
 
 const DEFAULT_BOUNDS = { width: 1440, height: 900 };
 const MIN_SIZE = { width: 1180, height: 720 };
 
 type Bounds = { x?: number; y?: number; width: number; height: number };
 type WindowState = { bounds: Bounds; maximized: boolean };
-type UiState = { lane: number; tab: 'doc' | 'research' | 'files'; autonomy: 0 | 1 | 2 };
 
-const stateFile = (name: string) => path.join(app.getPath('userData'), name);
+let win: BrowserWindow | null = null;
+let db: Db;
+let agent: Agent;
+let ollama: Ollama;
 
-function readJson<T>(name: string, fallback: T): T {
-  try {
-    return { ...fallback, ...JSON.parse(fs.readFileSync(stateFile(name), 'utf8')) };
-  } catch {
-    return fallback;
-  }
-}
-
-function writeJson(name: string, value: unknown) {
-  try {
-    fs.mkdirSync(app.getPath('userData'), { recursive: true });
-    fs.writeFileSync(stateFile(name), JSON.stringify(value, null, 2));
-  } catch (err) {
-    console.error(`Could not save ${name}:`, err);
-  }
-}
+const emit = (e: JarvisEvent) => { if (win && !win.isDestroyed()) win.webContents.send('jarvis:event', e); };
 
 /** Keep a restored window on a connected display; fall back to the default size otherwise. */
 function visibleBounds(b: Bounds): Bounds {
@@ -37,9 +29,9 @@ function visibleBounds(b: Bounds): Bounds {
 }
 
 function createWindow() {
-  const saved = readJson<WindowState>('window-state.json', { bounds: DEFAULT_BOUNDS, maximized: false });
+  const saved = db.getKv<WindowState>('window', { bounds: DEFAULT_BOUNDS, maximized: false });
   const bounds = visibleBounds(saved.bounds);
-  const win = new BrowserWindow({
+  win = new BrowserWindow({
     ...bounds,
     width: Math.max(bounds.width, MIN_SIZE.width),
     height: Math.max(bounds.height, MIN_SIZE.height),
@@ -57,58 +49,143 @@ function createWindow() {
       sandbox: true,
     },
   });
-  if (saved.maximized) win.maximize();
-  win.once('ready-to-show', () => win.show());
+  const w = win;
+  if (saved.maximized) w.maximize();
+  w.once('ready-to-show', () => w.show());
 
-  const save = () => {
-    if (win.isDestroyed()) return;
-    writeJson('window-state.json', { bounds: win.getNormalBounds(), maximized: win.isMaximized() });
-  };
+  const save = () => { if (!w.isDestroyed()) db.setKv('window', { bounds: w.getNormalBounds(), maximized: w.isMaximized() }); };
   let timer: NodeJS.Timeout | undefined;
   const saveSoon = () => { clearTimeout(timer); timer = setTimeout(save, 400); };
-  win.on('resize', saveSoon);
-  win.on('move', saveSoon);
-  win.on('close', save);
+  w.on('resize', saveSoon);
+  w.on('move', saveSoon);
+  w.on('close', save);
+  w.on('closed', () => { if (win === w) win = null; });
 
   // Links open in the default browser; the app window never navigates away.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/.test(url)) shell.openExternal(url);
+  w.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:/.test(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
-  win.webContents.on('will-navigate', (e, url) => {
-    if (url !== win.webContents.getURL()) e.preventDefault();
-  });
+  w.webContents.on('will-navigate', (e, url) => { if (url !== w.webContents.getURL()) e.preventDefault(); });
 
   const devUrl = process.env.VITE_DEV_SERVER_URL;
-  if (devUrl) win.loadURL(devUrl);
-  else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
-  return win;
+  if (devUrl) void w.loadURL(devUrl);
+  else void w.loadFile(path.join(__dirname, '..', '..', 'dist', 'index.html'));
 }
 
-const UI_DEFAULTS: UiState = { lane: 0, tab: 'doc', autonomy: 0 };
+function notify(title: string, body: string) {
+  if (win?.isFocused() || !Notification.isSupported()) return;
+  new Notification({ title: `JARVIS · ${title}`, body }).show();
+}
 
-ipcMain.handle('ui-state:get', () => readJson<UiState>('ui-state.json', UI_DEFAULTS));
-ipcMain.handle('ui-state:set', (_e, patch: Partial<UiState>) => {
-  const next = { ...readJson<UiState>('ui-state.json', UI_DEFAULTS), ...sanitizeUi(patch) };
-  writeJson('ui-state.json', next);
-  return next;
-});
+/** Every IPC handler goes through here so errors come back as plain messages. */
+function handle(channel: string, fn: (...args: never[]) => unknown) {
+  ipcMain.handle(channel, async (_e, ...args) => {
+    try {
+      return await (fn as (...a: unknown[]) => unknown)(...args);
+    } catch (err) {
+      throw new Error((err as Error).message);
+    }
+  });
+}
 
-function sanitizeUi(patch: Partial<UiState>): Partial<UiState> {
-  const out: Partial<UiState> = {};
-  if (Number.isInteger(patch.lane) && patch.lane! >= 0 && patch.lane! < 50) out.lane = patch.lane;
-  if (patch.tab === 'doc' || patch.tab === 'research' || patch.tab === 'files') out.tab = patch.tab;
-  if (patch.autonomy === 0 || patch.autonomy === 1 || patch.autonomy === 2) out.autonomy = patch.autonomy;
-  return out;
+const str = (v: unknown, max = 20000) => { if (typeof v !== 'string') throw new Error('Expected text.'); return v.slice(0, max); };
+
+function registerIpc() {
+  handle('ui:get', () => db.getKv<UiState>('ui', { laneId: null, tab: 'doc' }));
+  handle('ui:set', (patch: Partial<UiState>) => {
+    const cur = db.getKv<UiState>('ui', { laneId: null, tab: 'doc' });
+    const next: UiState = {
+      laneId: patch.laneId === null || typeof patch.laneId === 'string' ? patch.laneId : cur.laneId,
+      tab: patch.tab === 'doc' || patch.tab === 'research' || patch.tab === 'files' ? patch.tab : cur.tab,
+    };
+    db.setKv('ui', next);
+    return next;
+  });
+
+  handle('lanes:list', () => db.listLanes());
+  handle('lanes:create', () => {
+    const lane = db.createLane(NEW_LANE_TITLE, db.getSettings().autonomy);
+    agent.emitLanes();
+    return lane;
+  });
+  handle('lanes:delete', (id: string) => agent.deleteLane(str(id)));
+  handle('lanes:autonomy', (id: string, a: Settings['autonomy']) => {
+    if (!['ask_every_change', 'ask_if_risky', 'autonomous'].includes(a)) throw new Error('Unknown autonomy level.');
+    db.updateLane(str(id), { autonomy: a });
+    agent.emitLanes();
+  });
+  handle('messages:list', (id: string) => db.listMessages(str(id)));
+  handle('steps:list', (id: string) => db.listSteps(str(id)));
+
+  // Long-running agent work is started here and reported through events.
+  const fireAndReport = (p: Promise<void>) => p.catch((e) => console.error(e));
+  handle('chat:send', (id: string, text: string) => {
+    const lane = db.getLane(str(id));
+    if (!lane) throw new Error('That lane no longer exists.');
+    if (lane.status === 'planning' || lane.status === 'running') throw new Error('Jarvis is still working in this lane. Stop it first, or wait for the current step to finish.');
+    void fireAndReport(agent.send(id, str(text)));
+  });
+  handle('plan:approve', (id: string) => { void fireAndReport(agent.approvePlan(str(id))); });
+  handle('plan:update', (id: string, steps: { text: string; requiresGate: boolean }[]) => {
+    if (!Array.isArray(steps)) throw new Error('Expected a list of steps.');
+    agent.updatePlan(str(id), steps.map((s) => ({ text: str(s.text, 500), requiresGate: !!s.requiresGate })));
+  });
+  handle('gate:approve', (id: string) => { void fireAndReport(agent.approveGate(str(id))); });
+  handle('gate:skip', (id: string) => { void fireAndReport(agent.skipGate(str(id))); });
+  handle('lane:stop', (id: string) => agent.stop(str(id)));
+  handle('lane:resume', (id: string) => { void fireAndReport(agent.resume(str(id))); });
+
+  handle('settings:get', () => db.getSettings());
+  handle('settings:set', (patch: Partial<Settings>) => {
+    const clean: Partial<Settings> = {};
+    if (typeof patch.ollamaUrl === 'string' && /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/.test(patch.ollamaUrl)) clean.ollamaUrl = patch.ollamaUrl;
+    if (typeof patch.model === 'string' && /^[\w.:/-]{1,100}$/.test(patch.model)) clean.model = patch.model;
+    if (['ask_every_change', 'ask_if_risky', 'autonomous'].includes(patch.autonomy as string)) clean.autonomy = patch.autonomy;
+    if (Number.isInteger(patch.maxParallel) && patch.maxParallel! >= 1 && patch.maxParallel! <= 4) clean.maxParallel = patch.maxParallel;
+    const s = db.setSettings(clean);
+    emit({ type: 'settings', settings: s });
+    return s;
+  });
+  handle('engine:status', () => ollama.status(db.getSettings().model));
+  handle('engine:pull', (model: string) => {
+    const m = str(model, 100);
+    void ollama.pull(m, (progress) => emit({ type: 'pull', progress }))
+      .catch((e) => emit({ type: 'pull', progress: { model: m, status: '', done: true, error: (e as Error).message || 'Download failed.' } }));
+  });
+
+  handle('memory:list', () => db.listMemories());
+  handle('memory:add', (text: string) => { db.addMemory(str(text, 500).trim()); emit({ type: 'memories', memories: db.listMemories() }); });
+  handle('memory:update', (id: string, patch: { text?: string; enabled?: boolean }) => {
+    db.updateMemory(str(id), { text: patch.text === undefined ? undefined : str(patch.text, 500), enabled: patch.enabled === undefined ? undefined : !!patch.enabled });
+    emit({ type: 'memories', memories: db.listMemories() });
+  });
+  handle('memory:delete', (id: string) => { db.deleteMemory(str(id)); emit({ type: 'memories', memories: db.listMemories() }); });
+
+  handle('data:deleteAll', () => {
+    for (const l of db.listLanes()) agent.stop(l.id);
+    db.deleteAll();
+    agent.emitLanes();
+    emit({ type: 'memories', memories: [] });
+    emit({ type: 'settings', settings: db.getSettings() });
+  });
+  handle('open:external', (url: string) => {
+    const u = str(url, 2000);
+    if (!/^https:\/\//.test(u)) throw new Error('Only web links can be opened.');
+    return shell.openExternal(u);
+  });
 }
 
 app.whenReady().then(() => {
+  fs.mkdirSync(app.getPath('userData'), { recursive: true });
+  db = new Db(path.join(app.getPath('userData'), 'jarvis.db'));
+  ollama = new Ollama(() => process.env.JARVIS_OLLAMA_URL || db.getSettings().ollamaUrl);
+  agent = new Agent(db, ollama, emit, notify);
+  agent.recover();
+  registerIpc();
   createWindow();
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('will-quit', () => { try { db?.close(); } catch { /* already closed */ } });

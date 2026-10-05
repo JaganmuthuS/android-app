@@ -4,11 +4,16 @@
     "module": "Node16",
     "moduleResolution": "Node16",
     "outDir": "dist-electron",
-    "rootDir": "electron",
+    "rootDir": ".",
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["electron"]
+  "include": [
+    "electron",
+    "shared"
+  ]
 }

@@ -1,149 +1,251 @@
-import { ArrowUp, Mic } from 'lucide-react';
-import { useEffect, useRef } from 'react';
-import * as demo from '../demo';
-import { useStore } from '../store';
+import { ArrowDown, ArrowUp, Mic, Plus, Square, Trash2, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import type { Lane, Message, PlanStep } from '../../shared/types';
+import { currentLane, engineReady, isBusy, useStore } from '../store';
+import { SetupCard } from './SetupCard';
+
+const EMPTY_MESSAGES: Message[] = [];
+const EMPTY_STEPS: PlanStep[] = [];
 
 export function LaneColumn() {
-  const state = useStore();
-  const lanes = demo.lanes(state);
-  const lane = lanes[state.lane];
-  const isMain = state.lane === 0;
+  const lane = useStore(currentLane);
+  const lanes = useStore((s) => s.lanes);
+  const index = lane ? lanes.findIndex((l) => l.id === lane.id) : -1;
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  useEffect(() => setConfirmDelete(false), [lane?.id]);
 
   return (
-    <section className="col" aria-label={`Lane ${state.lane + 1}`}>
+    <section className="col" aria-label={lane ? `Lane ${index + 1}` : 'Lane'}>
       <div className="lane-head">
-        <div className="label lane-kicker">Lane {state.lane + 1}</div>
-        <div className="lane-name">{lane.title}</div>
-      </div>
-      {isMain ? <Chat /> : (
-        <div className="other-lane">
-          <div className="card">
-            <div className="card-kicker">{lane.status}</div>
-            <div className="card-body">{lane.last}</div>
-            <div className="card-meta">Updated {lane.when}</div>
-          </div>
-          <button type="button" className="btn btn-secondary" onClick={() => state.selectLane(0)}>Back to {lanes[0].title}</button>
+        <div className="lane-head-row">
+          <div className="label lane-kicker">Lane {index + 1}</div>
+          {lane && lanes.length > 1 && (
+            confirmDelete ? (
+              <span className="lane-delete">
+                <span>Delete this lane?</span>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => void useStore.getState().deleteLane(lane.id)}>Delete</button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setConfirmDelete(false)}>Keep</button>
+              </span>
+            ) : (
+              <button type="button" className="btn btn-ghost btn-sm icon-ghost" aria-label="Delete lane" title="Delete lane" onClick={() => setConfirmDelete(true)}>
+                <Trash2 size={14} />
+              </button>
+            )
+          )}
         </div>
-      )}
-      <Composer />
+        <div className="lane-name">{lane?.title ?? ''}</div>
+      </div>
+      {lane && <Chat lane={lane} />}
+      {lane && <Composer lane={lane} />}
     </section>
   );
 }
 
-function Chat() {
-  const state = useStore();
-  const items = demo.chatItems(state);
+function Chat({ lane }: { lane: Lane }) {
+  const messages = useStore((s) => s.messages[lane.id] ?? EMPTY_MESSAGES);
+  const steps = useStore((s) => s.steps[lane.id] ?? EMPTY_STEPS);
+  const streams = useStore((s) => s.streams);
+  const ready = useStore(engineReady);
+  const engineKnown = useStore((s) => s.engine !== null);
   const ref = useRef<HTMLDivElement>(null);
-  const thinking = demo.isThinking(state);
+  const lastPlan = messages.map((m) => m.kind).lastIndexOf('plan');
+  const streamingText = messages.some((m) => streams[m.id]);
+  const thinking = isBusy(lane) && !streamingText;
+  const running = steps.find((s) => s.state === 'running');
+  const scrollKey = `${messages.length}|${Object.values(streams).join('').length}|${lane.status}`;
 
   useEffect(() => {
     const el = ref.current;
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-  }, [items.length, state.step, state.running]);
+  }, [scrollKey]);
 
   return (
     <div className="chat" ref={ref}>
-      {items.map((m, i) => {
+      {engineKnown && !ready && <SetupCard />}
+      {messages.length === 0 && ready && (
+        <div className="msg-jarvis">
+          <span className="label">Jarvis</span>
+          <p>What should I work on? Ask a question, or describe a task and I will plan it before doing anything.</p>
+        </div>
+      )}
+      {messages.map((m, i) => {
+        const p = m.payload;
         switch (m.kind) {
-          case 'user': return <div key={i} className="msg-user">{m.text}</div>;
-          case 'text': return (
-            <div key={i} className="msg-jarvis"><span className="label">Jarvis</span><p>{m.text}</p></div>
-          );
-          case 'log': return <div key={i} className="log"><b>{m.verb}</b><span>{m.what}</span></div>;
-          case 'plan': return <PlanCard key={i} />;
-          case 'gate': return <GateCard key={i} />;
+          case 'text': {
+            if (m.role === 'user') return <div key={m.id} className="msg-user">{String(p.text)}</div>;
+            const text = streams[m.id] ?? String(p.text ?? '');
+            if (!text && !p.streaming) return null;
+            if (!text) return null;
+            return (
+              <div key={m.id} className="msg-jarvis">
+                <span className="label">{p.step ? `Jarvis · step ${String(p.step)}` : 'Jarvis'}</span>
+                <p>{text}{p.interrupted ? <span className="muted"> (stopped)</span> : null}</p>
+              </div>
+            );
+          }
+          case 'plan':
+            return i === lastPlan
+              ? <PlanCard key={m.id} lane={lane} steps={steps} scope={String(p.scope ?? '')} />
+              : <div key={m.id} className="log"><b>Plan</b><span>Replaced by a newer plan</span></div>;
+          case 'log': return <div key={m.id} className="log"><b>{String(p.verb)}</b><span>{String(p.what)}</span></div>;
+          case 'gate': return <GateCard key={m.id} lane={lane} message={m} />;
+          case 'error': return <div key={m.id} className="error-card" role="alert"><b className="label">Problem</b><span>{String(p.text)}</span></div>;
+          default: return null;
         }
       })}
-      {thinking && <div className="thinking">{demo.thinkingText(state)}</div>}
+      {thinking && (
+        <div className="thinking">
+          {lane.statusText.startsWith('Queued') ? lane.statusText
+            : lane.status === 'planning' ? 'Reading the request and checking folder access…'
+            : running ? `Step ${running.index + 1}: ${running.text}` : 'Working…'}
+        </div>
+      )}
     </div>
   );
 }
 
-function PlanCard() {
-  const state = useStore();
-  const steps = demo.planSteps(state);
-  const showActions = state.planShown && !state.approved;
-  const showResume = state.approved && !state.running && state.step < 4 && state.restored;
+function PlanCard({ lane, steps, scope }: { lane: Lane; steps: PlanStep[]; scope: string }) {
+  const [editing, setEditing] = useState<{ text: string; requiresGate: boolean }[] | null>(null);
+  const { approvePlan, savePlan, resume } = useStore.getState();
+  const done = steps.filter((s) => s.state === 'done' || s.state === 'skipped').length;
+  const awaiting = lane.status === 'awaiting_plan_approval';
+  const next = steps.find((s) => s.state === 'queued');
+  useEffect(() => { if (!awaiting) setEditing(null); }, [awaiting]);
+
+  const move = (i: number, d: number) => setEditing((e) => {
+    if (!e) return e;
+    const j = i + d;
+    if (j < 0 || j >= e.length) return e;
+    const c = [...e];
+    [c[i], c[j]] = [c[j], c[i]];
+    return c;
+  });
 
   return (
     <div className="plan">
       <div className="plan-head">
-        <span className="label">Plan · {demo.planProgress(state)}</span>
-        <span className="scope">Scope: Finance (read) · Board (write)</span>
+        <span className="label">Plan · {done} of {steps.length}</span>
+        {scope && <span className="scope">Scope: {scope}</span>}
       </div>
-      {steps.map((s) => (
-        <div key={s.text} className={`plan-step step-${s.state}`}>
-          <span className={`sq ${s.state}`} />
-          <span className="step-text">{s.text}</span>
-          <span className="step-note">{s.note}</span>
+      {editing ? (
+        <div className="plan-edit">
+          {editing.map((s, i) => (
+            <div key={i} className="plan-edit-row">
+              <span className="step-num">{i + 1}</span>
+              <input
+                className="input"
+                aria-label={`Step ${i + 1}`}
+                value={s.text}
+                onChange={(e) => setEditing((cur) => cur!.map((x, k) => (k === i ? { ...x, text: e.target.value } : x)))}
+              />
+              <label className="gate-toggle" title="Ask before this step runs">
+                <input type="checkbox" checked={s.requiresGate} onChange={(e) => setEditing((cur) => cur!.map((x, k) => (k === i ? { ...x, requiresGate: e.target.checked } : x)))} />
+                Gate
+              </label>
+              <button type="button" className="btn btn-ghost icon-ghost" aria-label={`Move step ${i + 1} up`} disabled={i === 0} onClick={() => move(i, -1)}><ArrowUp size={14} /></button>
+              <button type="button" className="btn btn-ghost icon-ghost" aria-label={`Move step ${i + 1} down`} disabled={i === editing.length - 1} onClick={() => move(i, 1)}><ArrowDown size={14} /></button>
+              <button type="button" className="btn btn-ghost icon-ghost" aria-label={`Delete step ${i + 1}`} disabled={editing.length === 1} onClick={() => setEditing((cur) => cur!.filter((_, k) => k !== i))}><X size={14} /></button>
+            </div>
+          ))}
+          <button type="button" className="btn btn-ghost add-step" onClick={() => setEditing((cur) => [...cur!, { text: '', requiresGate: false }])}><Plus size={14} /> Add step</button>
         </div>
-      ))}
-      {showActions && (
+      ) : (
+        steps.map((s) => {
+          const gate = s.requiresGate && s.state === 'queued' && s.note !== 'approved';
+          const look = s.state === 'running' ? 'running' : s.state === 'done' ? 'done' : s.state === 'skipped' ? 'skipped' : gate ? 'gate' : 'queued';
+          const note = s.state === 'done' ? 'done' : s.state === 'running' ? 'working' : s.state === 'skipped' ? 'skipped' : gate ? 'needs your approval' : '';
+          return (
+            <div key={s.id} className={`plan-step step-${look}`}>
+              <span className={`sq ${look}`} />
+              <span className="step-text">{s.text}</span>
+              <span className="step-note">{note}</span>
+            </div>
+          );
+        })
+      )}
+      {awaiting && !editing && (
         <div className="plan-actions">
-          <button type="button" className="btn btn-primary" onClick={state.approvePlan}>Approve plan</button>
-          <button type="button" className="btn btn-secondary" title="Available in a later phase" disabled>Edit steps</button>
+          <button type="button" className="btn btn-primary" onClick={() => void approvePlan()}>Approve plan</button>
+          <button type="button" className="btn btn-secondary" onClick={() => setEditing(steps.map((s) => ({ text: s.text, requiresGate: s.requiresGate })))}>Edit steps</button>
         </div>
       )}
-      {showResume && (
+      {editing && (
         <div className="plan-actions">
-          <button type="button" className="btn btn-primary" onClick={state.resume}>Resume from step {state.step + 1}</button>
-          <span className="muted" style={{ fontSize: 12 }}>Restored to checkpoint</span>
+          <button type="button" className="btn btn-primary" onClick={async () => { if (await savePlan(editing)) setEditing(null); }}>Save steps</button>
+          <button type="button" className="btn btn-secondary" onClick={() => setEditing(null)}>Cancel</button>
+        </div>
+      )}
+      {lane.status === 'paused' && next && (
+        <div className="plan-actions">
+          <button type="button" className="btn btn-primary" onClick={() => void resume()}>Resume from step {next.index + 1}</button>
+          <span className="muted" style={{ fontSize: 12 }}>{lane.statusText}</span>
         </div>
       )}
     </div>
   );
 }
 
-function GateCard() {
-  const state = useStore();
-  const blocked = demo.pendingCount(state) > 0 || demo.isDone(state);
+function GateCard({ lane, message }: { lane: Lane; message: Message }) {
+  const { approveGate, skipGate } = useStore.getState();
+  const state = String(message.payload.state);
+  const pending = state === 'pending' && lane.status === 'awaiting_gate';
   return (
     <div className="gate" role="group" aria-label="Approval needed">
-      <div className="gate-head label">Approval needed</div>
-      <div className="gate-body">Export Q3-Board.docx to <b>Board/Out/Q3-Board.pdf</b>. This is the first file that leaves the working draft.</div>
+      <div className="gate-head label">{pending ? 'Approval needed' : 'Approval'}</div>
+      <div className="gate-body">
+        Next step: <b>{String(message.payload.text)}</b>. This step can send, export, delete or overwrite something, so Jarvis waits for you.
+      </div>
       <div className="gate-actions">
-        <button type="button" className="btn btn-primary" disabled={blocked} onClick={state.approveExport}>Approve export</button>
-        <span>{demo.gateNote(state)}</span>
+        {pending ? (
+          <>
+            <button type="button" className="btn btn-primary" onClick={() => void approveGate()}>Approve step</button>
+            <button type="button" className="btn btn-secondary" onClick={() => void skipGate()}>Skip it</button>
+          </>
+        ) : (
+          <span className="tag tag-accent">{state === 'approved' ? 'Approved' : state === 'skipped' ? 'Skipped' : 'Replaced by a newer request'}</span>
+        )}
       </div>
     </div>
   );
 }
 
-function Composer() {
-  const draft = useStore((s) => s.draft);
-  const sent = useStore((s) => s.sent);
-  const voice = useStore((s) => s.voice);
-  const { setDraft, send, toggleVoice } = useStore.getState();
+function Composer({ lane }: { lane: Lane }) {
+  const draft = useStore((s) => s.drafts[lane.id] ?? '');
+  const ready = useStore(engineReady);
+  const { setDraft, send, stop } = useStore.getState();
+  const busy = isBusy(lane);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => { inputRef.current?.focus(); }, [lane.id]);
 
   return (
     <div className="composer">
-      {!sent && (
-        <div className="chips">
-          <span className="tag tag-outline">@Q3-Board.docx</span>
-          <span className="tag tag-outline">@Sept-close.xlsx</span>
-          <span className="tag tag-neutral">@lane EU AI Act</span>
-        </div>
-      )}
       <div className="composer-row">
         <textarea
+          ref={inputRef}
           id="composer-input"
           className="input"
           aria-label="Message Jarvis"
           value={draft}
-          placeholder="Ask Jarvis, or type / for commands"
+          placeholder={ready ? 'Ask Jarvis, or describe a task' : 'Finish the setup above to start'}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); if (!busy) void send(); }
           }}
         />
-        <button type="button" className="btn btn-secondary btn-icon" title="Hold to talk" aria-label="Voice input" aria-pressed={voice} onClick={toggleVoice}>
+        <button type="button" className="btn btn-secondary btn-icon" aria-label="Voice input" title="Voice input arrives in a later update" disabled>
           <Mic size={18} />
         </button>
-        <button type="button" className="btn btn-primary btn-icon" title="Send (Return)" aria-label="Send" onClick={send}>
-          <ArrowUp size={18} />
-        </button>
+        {busy ? (
+          <button type="button" className="btn btn-secondary btn-icon" aria-label="Stop" title="Stop this lane" onClick={() => void stop()}>
+            <Square size={16} />
+          </button>
+        ) : (
+          <button type="button" className="btn btn-primary btn-icon" aria-label="Send" title="Send (Return)" disabled={!draft.trim()} onClick={() => void send()}>
+            <ArrowUp size={18} />
+          </button>
+        )}
       </div>
-      <div className="hint">{voice ? 'Listening… release to send' : 'Return to send · ⌥ Space summons Jarvis from the menu bar in any app'}</div>
+      <div className="hint">{busy ? 'Jarvis is working. Stop pauses the lane; you can resume it.' : 'Return to send · Shift+Return for a new line'}</div>
     </div>
   );
 }
