@@ -1,0 +1,737 @@
+<title>Jarvis 1.0</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;700&family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400&display=swap">
+<style>
+/* Layout: one-screen HUD console. A fixed header with the reactor status lamp, a scrolling transcript, and a docked composer. Single dark theme by design. */
+:root {
+  --bg: #070b14;
+  --panel: #0f1726;
+  --panel-2: #172234;
+  --line: #22324a;
+  --user: #0b5f73;
+  --accent: #38d6f0;
+  --accent-ink: #032029;
+  --fg: #e3f4f8;
+  --muted: #8ba1b5;
+  --warn: #f2a65a;
+  --danger: #f07a7a;
+  --font-display: "Chakra Petch", "Avenir Next Condensed", "Arial Narrow", sans-serif;
+  --font-body: "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 var(--font-body);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+[hidden] { display: none !important; }
+button:focus-visible, a:focus-visible, textarea:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+header {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); flex: none;
+}
+.brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+h1 { margin: 0; font: 700 19px/1 var(--font-display); letter-spacing: .28em; color: var(--accent); }
+.status { margin-top: 4px; font: 12px/1.2 var(--font-mono); color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+.actions { display: flex; gap: 2px; flex: none; }
+.icon { background: none; border: 0; width: 40px; height: 40px; border-radius: 10px; display: grid; place-items: center; color: var(--muted); }
+.icon:hover, .icon:active { background: var(--panel-2); color: var(--fg); }
+.icon svg { width: 22px; height: 22px; }
+.icon.on { color: var(--accent); }
+
+.reactor {
+  width: 32px; height: 32px; border-radius: 50%; flex: none;
+  background: radial-gradient(circle, var(--fg) 0 20%, transparent 22% 42%, var(--accent) 44% 51%, transparent 53% 68%, var(--accent) 70% 79%, transparent 81%);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.reactor.thinking { animation: spin 1.4s linear infinite; }
+.reactor.speaking, .reactor.listening { animation: pulse .7s ease-in-out infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { transform: scale(1.12); box-shadow: 0 0 22px var(--accent); } }
+@media (prefers-reduced-motion: reduce) { .reactor { animation: none !important; } }
+
+main {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 16px; display: flex; flex-direction: column; gap: 12px;
+}
+.msg { max-width: min(88%, 640px); padding: 10px 14px; border-radius: 16px; overflow-wrap: anywhere; min-width: 0; }
+.msg.user { align-self: flex-end; background: var(--user); border-bottom-right-radius: 4px; white-space: pre-wrap; }
+.msg.bot { align-self: flex-start; background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.msg.bot.error { border-color: color-mix(in srgb, var(--danger) 55%, var(--line)); }
+.msg p { margin: 0 0 8px; }
+.msg > :last-child, .msg .body > :last-child { margin-bottom: 0; }
+.msg ul, .msg ol { margin: 0 0 8px; padding-left: 22px; }
+.msg .h { font: 700 15px/1.3 var(--font-display); letter-spacing: .04em; color: var(--accent); }
+.msg a { color: var(--accent); }
+.msg code { font: 13px var(--font-mono); background: var(--bg); padding: 1px 5px; border-radius: 5px; }
+.msg pre { background: var(--bg); padding: 10px 12px; border-radius: 10px; overflow-x: auto; margin: 0 0 8px; }
+.msg pre code { padding: 0; background: none; }
+.tools { display: flex; gap: 4px; margin-top: 8px; align-items: center; flex-wrap: wrap; }
+.tools button { background: none; border: 0; color: var(--muted); font-size: 13px; padding: 4px 8px; border-radius: 8px; }
+.tools button:hover, .tools button:active { background: var(--panel-2); color: var(--fg); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.chip {
+  display: inline-block; padding: 7px 12px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink); font-weight: 600; text-decoration: none; font-size: 14px;
+}
+.msg a.chip { color: var(--accent-ink); }
+.msg a.chip.ghost { background: none; color: var(--accent); border: 1px solid var(--accent); }
+.thinking-label { color: var(--muted); font: 13px var(--font-mono); letter-spacing: .06em; }
+
+#composer {
+  flex: none; display: flex; align-items: flex-end; gap: 8px;
+  padding: 10px 16px calc(env(safe-area-inset-bottom, 0px) + 10px);
+  border-top: 1px solid var(--line); background: var(--bg);
+}
+#input {
+  flex: 1; min-width: 0; resize: none; max-height: 140px;
+  font: 16px/1.4 var(--font-body); color: var(--fg); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 22px; padding: 11px 16px;
+}
+#input:focus { border-color: var(--accent); outline: none; }
+.round { width: 46px; height: 46px; flex: none; border: 0; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; }
+.round:disabled { opacity: .5; }
+.round.stop { background: var(--danger); color: var(--bg); }
+.round.live { background: var(--danger); color: var(--bg); animation: pulse .9s ease-in-out infinite; }
+.round svg { width: 22px; height: 22px; }
+
+/* Settings sheet */
+#sheet {
+  position: fixed; inset: 0; background: color-mix(in srgb, var(--bg) 70%, transparent);
+  display: flex; align-items: flex-end; justify-content: center; z-index: 10;
+}
+.sheet-card {
+  width: min(560px, 100%); max-height: 88%; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 18px 18px 0 0;
+  padding: 18px 16px calc(env(safe-area-inset-bottom, 0px) + 18px);
+  display: flex; flex-direction: column; gap: 16px;
+}
+.sheet-card h2 { margin: 0; font: 700 18px var(--font-display); letter-spacing: .12em; text-transform: uppercase; }
+.group { display: flex; flex-direction: column; gap: 10px; }
+.group h3 { margin: 0; font: 600 12px var(--font-mono); color: var(--accent); text-transform: uppercase; letter-spacing: .12em; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--muted); }
+.field input { font: 16px var(--font-body); color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.toggle { display: flex; align-items: center; gap: 10px; font-size: 15px; }
+.toggle input { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
+.toggle small { display: block; color: var(--muted); font-size: 13px; }
+.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.list li { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; background: var(--bg); border-radius: 10px; padding: 8px 10px; font-size: 14px; }
+.list li span { min-width: 0; overflow-wrap: anywhere; }
+.list li time { color: var(--muted); font: 12px var(--font-mono); display: block; }
+.list button { background: none; border: 0; color: var(--muted); padding: 2px 6px; flex: none; }
+.empty { color: var(--muted); font-size: 14px; margin: 0; }
+.row { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; align-items: center; }
+.btn { border-radius: 10px; padding: 9px 16px; border: 1px solid var(--line); background: none; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+.btn.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 50%, var(--line)); }
+.note { font-size: 13px; color: var(--muted); margin: 0; }
+</style>
+
+<header>
+  <div class="brand">
+    <div class="reactor" id="reactor" aria-hidden="true"></div>
+    <div>
+      <h1>J.A.R.V.I.S.</h1>
+      <div class="status" id="status">v1.0 · starting up</div>
+    </div>
+  </div>
+  <div class="actions">
+    <button id="btnVoice" class="icon" aria-label="Spoken replies" title="Spoken replies">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9v6h4l5 4V5L8 9H4z"/><path id="wave" d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/></svg>
+    </button>
+    <button id="btnClear" class="icon" aria-label="New chat" title="New chat">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>
+    </button>
+    <button id="btnSettings" class="icon" aria-label="Settings and memory" title="Settings and memory">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </button>
+  </div>
+</header>
+
+<main id="chat" aria-live="polite"></main>
+
+<form id="composer" autocomplete="off">
+  <textarea id="input" rows="1" placeholder="Ask Jarvis anything…" enterkeyhint="send" aria-label="Message"></textarea>
+  <button type="button" id="btnMic" class="round" aria-label="Speak" hidden>
+    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5.3-3A5.3 5.1 0 0 1 12 16.1 5.3 5.1 0 0 1 6.7 11H5c0 3.4 2.7 6.2 6 6.7V21h2v-3.3c3.3-.5 6-3.3 6-6.7z"/></svg>
+  </button>
+  <button type="submit" id="btnSend" class="round" aria-label="Send">
+    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+  </button>
+</form>
+
+<div id="sheet" hidden>
+  <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+    <h2 id="sheetTitle">Settings</h2>
+    <div class="group">
+      <h3>You</h3>
+      <label class="field" for="optName">What should Jarvis call you?
+        <input id="optName" autocapitalize="words" placeholder="sir">
+      </label>
+    </div>
+    <div class="group">
+      <h3>Behaviour</h3>
+      <label class="toggle" for="optVoice"><input type="checkbox" id="optVoice"><span>Speak replies aloud<small>Uses your phone's built-in voice.</small></span></label>
+      <label class="toggle" for="optDeep"><input type="checkbox" id="optDeep"><span>Deeper thinking<small>Better for hard questions, but answers take longer.</small></span></label>
+    </div>
+    <div class="group">
+      <h3>Memory</h3>
+      <ul class="list" id="notesList"></ul>
+    </div>
+    <div class="group">
+      <h3>Reminders</h3>
+      <ul class="list" id="remList"></ul>
+    </div>
+    <p class="note" id="storeNote"></p>
+    <div class="row">
+      <button type="button" class="btn danger" id="btnForget">Forget everything</button>
+      <button type="button" class="btn primary" id="btnDone">Done</button>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* ---------- local convenience storage (chat transcript, preferences) ---------- */
+const local = {
+  get(k, d) { try { const v = localStorage.getItem('jarvis.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('jarvis.' + k, JSON.stringify(v)); } catch { /* storage blocked */ } },
+};
+
+let prefs = Object.assign({ name: '', voice: true, deep: false }, local.get('prefs', {}));
+let messages = local.get('history', []);
+let notes = [];
+let reminders = [];
+
+/* ---------- durable memory: private per-person documents ---------- */
+let userDocs = null;            // collection reference for this viewer, once known
+let memoryMode = 'local';       // 'cloud' when saved to the viewer's account
+const writeQueue = {};
+
+function persistMemory(name, items) {
+  if (!userDocs) { local.set(name, items); return; }
+  // one write at a time per document; the latest state wins
+  const job = (writeQueue[name] || Promise.resolve())
+    .then(() => userDocs.doc(name).set({ items }))
+    .catch(() => local.set(name, items));
+  writeQueue[name] = job;
+}
+const saveNotes = () => persistMemory('notes', notes);
+const saveReminders = () => persistMemory('reminders', reminders);
+
+async function connectMemory() {
+  notes = local.get('notes', []);
+  reminders = local.get('reminders', []);
+  try {
+    const [db, user] = await Promise.all([claude.use('db'), claude.use('user')]);
+    const id = user ? await user.id() : null;
+    if (!db || !id) throw new Error('no db');
+    const col = db.collection('data/users/' + id);
+    const [n, r] = await Promise.all([col.doc('notes').get(), col.doc('reminders').get()]);
+    const cloudNotes = n.exists ? (n.data().items || []) : null;
+    const cloudRems = r.exists ? (r.data().items || []) : null;
+    userDocs = col;
+    memoryMode = 'cloud';
+    // first connection: carry over anything saved on this device
+    notes = cloudNotes ?? notes;
+    reminders = cloudRems ?? reminders;
+    if (!cloudNotes && notes.length) saveNotes();
+    if (!cloudRems && reminders.length) saveReminders();
+  } catch { memoryMode = 'local'; }
+  checkReminders();
+}
+
+/* ---------- brain: Claude, through the viewer's own account ---------- */
+let sample = null;
+let brainState = 'connecting';  // connecting | ready | off
+let controller = null;
+
+function rules() {
+  const who = prefs.name.trim() ? `Address the user as ${prefs.name.trim()}.` : "Address the user as 'sir' sparingly.";
+  const now = new Date().toLocaleString(undefined, { dateStyle: 'full', timeStyle: 'short' });
+  let r = 'You are J.A.R.V.I.S. (version 1.0), a witty, loyal and highly capable personal assistant, speaking like a polite British butler with dry humour. ' +
+    who + ` The current date and time for the user is ${now}. ` +
+    'Be helpful, accurate and concise; replies may be read aloud, so keep them short unless the user asks for detail. ' +
+    'Use Markdown (bold, short lists, code blocks) only when it genuinely helps. ' +
+    'You cannot browse the web or see live data such as news, weather or prices; say so briefly when asked, and suggest the user says "search for ..." so Jarvis can open a web search. ' +
+    'Jarvis handles these commands itself, so you can suggest them: "remember ...", "remind me at 6 pm to ...", "my reminders", "search for ...", "navigate to ...", "call <number>".';
+  if (notes.length) {
+    r += '\n\nFacts the user asked you to remember (use them whenever relevant):\n' +
+      notes.map((n) => `- ${n.text} (saved ${new Date(n.at).toLocaleDateString()})`).join('\n');
+  }
+  r += '\n\nReply to the conversation that follows.';
+  return r;
+}
+
+function errorCopy(code) {
+  switch (code) {
+    case 'not_granted': return 'Jarvis needs your permission to use Claude. Reload the page and tap Allow when asked.';
+    case 'sampling_disabled': case 'not_declared': case 'capability_disabled': case 'capability_removed':
+      return "Claude isn't available to this page on your account, so Jarvis can only run its built-in commands.";
+    case 'rate_limited': return "You've reached your Claude usage limit for now. Try again in a little while.";
+    case 'session_expired': return 'Your Claude session has expired. Sign in to claude.ai again, then reload.';
+    case 'refused': return "Claude declined that request. Try asking in a different way.";
+    case 'prompt_too_large': return 'This conversation has grown too long. Tap the bin icon to start a new chat.';
+    case 'empty_completion': return 'Claude returned an empty answer. Try rephrasing the question.';
+    default: return 'The connection to Claude dropped. Send the message again to retry.';
+  }
+}
+
+/* ---------- Markdown (safe subset) ---------- */
+const esc = (s) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function inline(s) {
+  return s.split(/(`[^`\n]+`)/g).map((part, i) => {
+    if (i % 2) return `<code>${esc(part.slice(1, -1))}</code>`;
+    return esc(part)
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)\*(?!\w)/g, '$1<em>$2</em>')
+      .replace(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+      .replace(/(^|[\s(])(https:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  }).join('');
+}
+function blocks(text) {
+  let html = ''; let list = null; let para = [];
+  const flushPara = () => { if (para.length) { html += `<p>${para.map(inline).join('<br>')}</p>`; para = []; } };
+  const flushList = () => { if (list) { html += `<${list.tag}>${list.items.map((i) => `<li>${inline(i)}</li>`).join('')}</${list.tag}>`; list = null; } };
+  for (const line of text.split('\n')) {
+    const ul = line.match(/^\s*[-*•]\s+(.*)$/);
+    const ol = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    const h = line.match(/^\s*#{1,6}\s+(.*)$/);
+    if (ul || ol) {
+      flushPara();
+      const tag = ul ? 'ul' : 'ol';
+      if (!list || list.tag !== tag) { flushList(); list = { tag, items: [] }; }
+      list.items.push((ul || ol)[1]);
+    } else if (h) { flushPara(); flushList(); html += `<p class="h">${inline(h[1])}</p>`; }
+    else if (!line.trim()) { flushPara(); flushList(); }
+    else { flushList(); para.push(line); }
+  }
+  flushPara(); flushList();
+  return html;
+}
+function markdown(src) {
+  return src.split(/```[\w+-]*\n?([\s\S]*?)(?:```|$)/g)
+    .map((p, i) => (i % 2 ? `<pre><code>${esc(p.replace(/\n$/, ''))}</code></pre>` : blocks(p))).join('');
+}
+function plainForSpeech(text) {
+  return text.replace(/```[\s\S]*?```/g, ' The code is on screen. ')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1').replace(/https?:\/\/\S+/g, 'link')
+    .replace(/[*_#`>|~]/g, '').replace(/^\s*[-•]\s+/gm, '');
+}
+
+/* ---------- reminders ---------- */
+function parseWhen(spec) {
+  spec = spec.toLowerCase().trim().replace(/[.!?]$/, '');
+  const now = new Date();
+  const rel = spec.match(/^(?:in\s+)?(\d+|an?|half an?)\s*(minutes?|mins?|hours?|hrs?|days?)$/);
+  if (rel) {
+    const n = /^half/.test(rel[1]) ? 0.5 : /^an?$/.test(rel[1]) ? 1 : parseInt(rel[1], 10);
+    const unit = rel[2][0] === 'm' ? 60e3 : rel[2][0] === 'h' ? 3600e3 : 86400e3;
+    return new Date(now.getTime() + n * unit);
+  }
+  let day = /\btomorrow\b/.test(spec) ? 1 : 0;
+  spec = spec.replace(/\b(today|tonight|tomorrow|at|on|this)\b/g, ' ').trim();
+  let h; let m = 0;
+  if (/^(noon|midday)$/.test(spec)) h = 12;
+  else if (/^midnight$/.test(spec)) { h = 0; if (!day) day = 1; }
+  else {
+    const t = spec.match(/^(\d{1,2})(?:[:.](\d{2}))?\s*(a\.?m\.?|p\.?m\.?|morning|evening|night)?$/);
+    if (!t) return null;
+    h = parseInt(t[1], 10); m = t[2] ? parseInt(t[2], 10) : 0;
+    const ap = t[3] || '';
+    if (/^p|evening|night/.test(ap) && h < 12) h += 12;
+    if (/^a|morning/.test(ap) && h === 12) h = 0;
+    if (!ap && !t[2] && h < 7) h += 12;
+    if (h > 23 || m > 59) return null;
+  }
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + day, h, m);
+  if (!day && d <= now) d.setDate(d.getDate() + 1);
+  return d;
+}
+function parseReminder(text) {
+  const t = text.replace(/^please\s+/i, '').trim();
+  let m;
+  if ((m = t.match(/^remind me (in .+?|at .+?|tomorrow(?: at)? .+?|tonight at .+?) to (.+)$/i))) return { when: m[1], what: m[2] };
+  if ((m = t.match(/^remind me (?:to |about )?(.+?) (in \d+ \w+|in an? \w+|in half an? \w+|(?:tomorrow |today |tonight )?(?:at )?\d{1,2}(?:[:.]\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?|(?:tomorrow |tonight )?at (?:noon|midnight)|tomorrow)$/i))) return { when: m[2], what: m[1] };
+  return null;
+}
+const stamp = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+const fmtWhen = (d) => d.toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+function calendarLink(r) {
+  const s = new Date(r.at); const e = new Date(r.at + 15 * 60e3);
+  return 'https://calendar.google.com/calendar/render?action=TEMPLATE&text=' + encodeURIComponent(r.what) + '&dates=' + stamp(s) + '/' + stamp(e);
+}
+function checkReminders() {
+  const now = Date.now(); let changed = false;
+  for (const r of reminders) {
+    if (!r.done && r.at <= now) { r.done = true; changed = true; reply(`⏰ **Reminder:** ${r.what}`); }
+  }
+  if (changed) { reminders = reminders.filter((r) => !r.done || now - r.at < 86400e3); saveReminders(); }
+}
+
+/* ---------- built-in commands (answered instantly, no AI) ---------- */
+function localCommand(input) {
+  const raw = input.trim().replace(/^(hey |ok )?jarvis[,!.]?\s*/i, '').replace(/[.!?]+$/, '');
+  const t = raw.toLowerCase();
+  let m;
+  if (/^((what('?s| is) the )?time( is it)?|what time is it|tell me the time)( now| right now)?$/.test(t))
+    return { text: `It is ${new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}.` };
+  if (/^(what('?s| is) )?(today'?s )?(the )?date( today)?$|^what day is (it|today)$/.test(t))
+    return { text: `Today is ${new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}.` };
+
+  if ((m = raw.match(/^(?:please )?(?:remember|note|don'?t forget)(?: that)?[:,]?\s+(.+)$/i)) && !/^to remind/i.test(m[1])) {
+    notes.push({ text: m[1], at: Date.now() }); saveNotes();
+    return { text: `Noted. I'll remember that ${m[1].replace(/^my /i, 'your ').replace(/^i /i, 'you ')}.` };
+  }
+  if (/^(what do you remember|what have you remembered|(show |list )?(my )?(notes|memories|memory))( about me)?$/.test(t))
+    return { text: notes.length ? 'Here is what I remember:\n' + notes.map((n) => `- ${n.text}`).join('\n') : 'Nothing yet. Say "remember …" and I will.' };
+  if ((m = raw.match(/^forget (?:about |that )?(.+)$/i)) && !/^everything$/i.test(m[1])) {
+    const key = m[1].toLowerCase(); const before = notes.length;
+    notes = notes.filter((n) => !n.text.toLowerCase().includes(key)); saveNotes();
+    return { text: before === notes.length ? `I don't have anything saved about "${m[1]}".` : `Forgotten. Nothing about "${m[1]}" remains.` };
+  }
+
+  if (/^(show |list |what are )?(my )?reminders$/.test(t)) {
+    const open = reminders.filter((r) => !r.done).sort((a, b) => a.at - b.at);
+    return { text: open.length ? 'Your reminders:\n' + open.map((r) => `- ${fmtWhen(new Date(r.at))}: ${r.what}`).join('\n') : 'You have no reminders set.' };
+  }
+  if (/^remind me\b/i.test(raw)) {
+    const p = parseReminder(raw); const when = p && parseWhen(p.when);
+    if (!p || !when) return { text: 'Tell me what and when, for example "remind me at 6 pm to buy milk" or "remind me to call Mom in 20 minutes".' };
+    const r = { id: Date.now().toString(36), what: p.what.replace(/^to /i, ''), at: when.getTime(), done: false };
+    reminders.push(r); saveReminders();
+    return {
+      text: `Reminder set for **${fmtWhen(when)}**: ${r.what}.\n\nI'll announce it here if Jarvis is open. To get a phone alert even when it's closed, add it to your calendar.`,
+      chips: [{ label: 'Add to Google Calendar', href: calendarLink(r) }],
+    };
+  }
+
+  if ((m = t.match(/^(?:call|dial|phone) ([+\d][\d\s()-]{2,})$/))) {
+    const n = m[1].replace(/[^\d+]/g, '');
+    return { text: `Here's the number: **${n}**. Tap below to call, or copy it into the Phone app.`, chips: [{ label: `Call ${n}`, href: 'tel:' + n }], copy: n };
+  }
+  if ((m = raw.match(/^(?:text|message|sms) ([+\d][\d\s()-]{2,}?)(?: saying| that|:)\s*(.+)$/i))) {
+    const n = m[1].replace(/[^\d+]/g, '');
+    return { text: `Message for **${n}**:\n\n${m[2]}\n\nTap below to open Messages, or copy the text.`, chips: [{ label: 'Open Messages', href: `sms:${n}&body=${encodeURIComponent(m[2])}` }], copy: m[2] };
+  }
+  if ((m = raw.match(/^whatsapp ([+\d][\d\s()-]{2,}?)(?: saying| that|:)\s*(.+)$/i))) {
+    const n = m[1].replace(/[^\d]/g, '');
+    return { text: `WhatsApp message for **${n}** is ready.`, chips: [{ label: 'Open WhatsApp', href: `https://wa.me/${n}?text=${encodeURIComponent(m[2])}` }] };
+  }
+  if ((m = raw.match(/^play (.+) on youtube$/i)))
+    return { text: `Here are YouTube results for ${m[1]}.`, chips: [{ label: 'Open YouTube', href: 'https://www.youtube.com/results?search_query=' + encodeURIComponent(m[1]) }] };
+  if ((m = raw.match(/^(?:search(?: for| the web for)?|google|look up) (.+)$/i)))
+    return { text: `Here's a web search for ${m[1]}.`, chips: [{ label: 'Open results', href: 'https://www.google.com/search?q=' + encodeURIComponent(m[1]) }] };
+  if ((m = raw.match(/^(?:navigate|directions|take me|drive) to (.+)$/i)))
+    return { text: `Directions to ${m[1]}.`, chips: [{ label: 'Open Apple Maps', href: 'https://maps.apple.com/?daddr=' + encodeURIComponent(m[1]) }, { label: 'Google Maps', href: 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(m[1]), ghost: true }] };
+  if ((m = t.match(/^(?:open|go to) ([a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?)$/)))
+    return { text: `Opening ${m[1]}.`, chips: [{ label: `Open ${m[1]}`, href: 'https://' + m[1] }] };
+  return null;
+}
+
+/* ---------- speech ---------- */
+const synth = window.speechSynthesis || null;
+let voice = null;
+function pickVoice() {
+  const vs = synth ? synth.getVoices() : [];
+  voice = vs.find((v) => /daniel/i.test(v.name) && /en-GB/i.test(v.lang)) || vs.find((v) => /en-GB/i.test(v.lang)) || null;
+}
+if (synth) { pickVoice(); try { synth.addEventListener('voiceschanged', pickVoice); } catch { /* old Safari */ } }
+let unlocked = false;
+function unlockSpeech() {
+  if (unlocked || !synth) return;
+  unlocked = true;
+  try { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; synth.speak(u); } catch { /* ignore */ }
+}
+function speak(text, force) {
+  if ((!prefs.voice && !force) || !synth) return;
+  try {
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(plainForSpeech(text));
+    if (voice) { u.voice = voice; u.lang = voice.lang; }
+    u.rate = 1.02; u.pitch = 0.9;
+    u.onstart = () => setLamp('speaking');
+    u.onend = u.onerror = () => setLamp('');
+    synth.speak(u);
+  } catch { setLamp(''); }
+}
+function stopSpeaking() { try { synth && synth.cancel(); } catch { /* ignore */ } setLamp(''); }
+
+// Voice typing: only offered where this browser frame allows it.
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null;
+function listen() {
+  if (rec) { rec.stop(); return; }
+  stopSpeaking();
+  try { rec = new SR(); } catch { micBtn.dataset.blocked = '1'; syncComposer(); return; }
+  rec.lang = navigator.language || 'en-US';
+  rec.interimResults = true;
+  let finalText = '';
+  rec.onresult = (e) => {
+    let interim = ''; finalText = '';
+    for (const r of e.results) (r.isFinal ? (finalText += r[0].transcript) : (interim += r[0].transcript));
+    input.value = (finalText || interim).trim(); syncComposer();
+  };
+  rec.onerror = (e) => {
+    if (/not-allowed|service-not-allowed|audio-capture/.test(e.error)) {
+      micBtn.dataset.blocked = '1'; syncComposer();
+      note('Voice typing is blocked here. Tap the message box and use the microphone key on your iPhone keyboard instead.');
+    }
+  };
+  rec.onend = () => {
+    rec = null; micBtn.classList.remove('live'); setLamp('');
+    const said = (finalText || '').trim();
+    if (said) { input.value = ''; syncComposer(); send(said); }
+  };
+  micBtn.classList.add('live'); setLamp('listening');
+  try { rec.start(); } catch { rec = null; micBtn.classList.remove('live'); setLamp(''); }
+}
+
+/* ---------- UI ---------- */
+const $ = (s) => document.querySelector(s);
+const chat = $('#chat');
+const input = $('#input');
+const micBtn = $('#btnMic');
+const sendBtn = $('#btnSend');
+let busy = false;
+
+function setLamp(state) { $('#reactor').className = 'reactor' + (state ? ' ' + state : busy ? ' thinking' : ''); }
+function setStatus() {
+  const s = { connecting: 'connecting to Claude', ready: 'online', off: 'offline · commands only' }[brainState];
+  $('#status').textContent = `v1.0 · ${busy ? 'thinking' : s}`;
+  $('#btnVoice').classList.toggle('on', prefs.voice);
+  $('#btnVoice').setAttribute('aria-pressed', String(prefs.voice));
+  $('#wave').style.opacity = prefs.voice ? 1 : 0.15;
+}
+
+function greeting() {
+  const n = prefs.name.trim() || 'sir';
+  return `Good day, ${n}. **J.A.R.V.I.S. 1.0** is online and at your service.\n\nAsk me anything, or try:\n- "remember my car is parked on level B2"\n- "remind me at 6 pm to buy milk"\n- "navigate to the airport"\n- "what do you remember"`;
+}
+
+async function copyText(text, btn) {
+  try { await navigator.clipboard.writeText(text); btn.textContent = 'Copied'; }
+  catch { btn.textContent = 'Copy blocked'; }
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+}
+
+function render(m) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + (m.role === 'user' ? 'user' : 'bot') + (m.err ? ' error' : '');
+  if (m.role === 'user') { el.textContent = m.text; }
+  else {
+    const body = document.createElement('div');
+    body.className = 'body';
+    body.innerHTML = markdown(m.text);
+    el.appendChild(body);
+    if (m.chips && m.chips.length) {
+      const wrap = document.createElement('div'); wrap.className = 'chips';
+      for (const c of m.chips) {
+        const a = document.createElement('a');
+        a.className = 'chip' + (c.ghost ? ' ghost' : ''); a.href = c.href; a.textContent = c.label;
+        a.target = '_blank'; a.rel = 'noopener';
+        wrap.appendChild(a);
+      }
+      el.appendChild(wrap);
+    }
+    if (!m.err) {
+      const tools = document.createElement('div'); tools.className = 'tools';
+      const copy = document.createElement('button'); copy.type = 'button'; copy.textContent = 'Copy';
+      copy.onclick = () => copyText(m.copy || m.text, copy);
+      const say = document.createElement('button'); say.type = 'button'; say.textContent = 'Read aloud';
+      say.onclick = () => { unlockSpeech(); speak(m.text, true); };
+      tools.append(copy, say);
+      el.appendChild(tools);
+    }
+  }
+  chat.appendChild(el);
+  chat.scrollTop = chat.scrollHeight;
+  return el;
+}
+function renderAll() {
+  chat.innerHTML = '';
+  if (!messages.length) messages.push({ role: 'bot', text: greeting() });
+  messages.forEach(render);
+}
+function saveHistory() { local.set('history', messages.slice(-120)); }
+function add(m) { messages.push(m); saveHistory(); return render(m); }
+function reply(text, extra = {}) { add({ role: 'bot', text, ...extra }); speak(text); }
+function note(text) { add({ role: 'bot', text, err: true }); }
+
+function syncComposer() {
+  const has = input.value.trim().length > 0;
+  if (busy) {
+    sendBtn.hidden = false; micBtn.hidden = true;
+    sendBtn.classList.add('stop'); sendBtn.setAttribute('aria-label', 'Stop');
+    sendBtn.innerHTML = '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>';
+  } else {
+    sendBtn.classList.remove('stop'); sendBtn.setAttribute('aria-label', 'Send');
+    sendBtn.innerHTML = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>';
+    const micOk = !!SR && !micBtn.dataset.blocked;
+    micBtn.hidden = has || !micOk;
+    sendBtn.hidden = !has && micOk;
+  }
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+}
+function setBusy(b) { busy = b; setLamp(''); setStatus(); syncComposer(); }
+
+async function send(text) {
+  text = text.trim();
+  if (!text || busy) return;
+  unlockSpeech(); stopSpeaking();
+  if (/^(clear( chat)?|reset|new chat)$/i.test(text)) { clearChat(); return; }
+  add({ role: 'user', text });
+
+  const cmd = localCommand(text);
+  if (cmd) { reply(cmd.text, { chips: cmd.chips, copy: cmd.copy }); return; }
+
+  if (!sample) {
+    note(brainState === 'connecting'
+      ? 'Still connecting to Claude. Give it a few seconds and send again.'
+      : "Claude isn't available on this page right now, so I can only run built-in commands such as reminders, memory and directions.");
+    return;
+  }
+
+  // Conversation for Claude: standing rules, then the recent real exchange.
+  const turns = messages.filter((m) => !m.err && m.text).slice(-16)
+    .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }));
+  while (turns.length && turns[0].role !== 'user') turns.shift();
+  const input2 = [{ role: 'user', content: rules() }, ...turns];
+
+  const bubble = add({ role: 'bot', text: '' });
+  const body = bubble.querySelector('.body');
+  const tools = bubble.querySelector('.tools');
+  tools.hidden = true;
+  body.innerHTML = '<span class="thinking-label">Thinking…</span>';
+  const entry = messages[messages.length - 1];
+
+  controller = new AbortController();
+  setBusy(true);
+  try {
+    const res = await sample(input2, {
+      cache: false,
+      signal: controller.signal,
+      modelTier: prefs.deep ? 'default' : 'quick',
+      onText: ({ text: so }) => { body.innerHTML = markdown(so); chat.scrollTop = chat.scrollHeight; },
+    });
+    entry.text = res.text + (res.truncated ? '\n\n*(Answer cut short. Ask for less at a time.)*' : '');
+    body.innerHTML = markdown(entry.text);
+    tools.hidden = false;
+    saveHistory();
+    speak(entry.text);
+  } catch (e) {
+    const partial = e && e.text;
+    if (e && e.code === 'cancelled') {
+      if (partial) { entry.text = partial + '\n\n*(Stopped.)*'; body.innerHTML = markdown(entry.text); tools.hidden = false; }
+      else { messages.pop(); bubble.remove(); }
+    } else {
+      if (e && /not_granted|sampling_disabled|not_declared|capability_disabled|capability_removed/.test(e.code)) { sample = null; brainState = 'off'; }
+      if (partial && e.code !== 'refused') { entry.text = partial; body.innerHTML = markdown(partial); tools.hidden = false; }
+      else { messages.pop(); bubble.remove(); }
+      note(errorCopy(e && e.code));
+    }
+    saveHistory();
+  } finally {
+    controller = null;
+    setBusy(false);
+  }
+}
+
+function clearChat() { stopSpeaking(); messages = []; saveHistory(); renderAll(); }
+
+/* ---------- settings sheet ---------- */
+const sheet = $('#sheet');
+let forgetArmed = false;
+function renderLists() {
+  const nl = $('#notesList'); nl.innerHTML = '';
+  if (!notes.length) { const p = document.createElement('li'); p.className = 'empty'; p.style.background = 'none'; p.style.padding = '0'; p.textContent = 'Nothing saved yet. Say "remember …" in the chat.'; nl.appendChild(p); }
+  notes.forEach((n, i) => {
+    const li = document.createElement('li');
+    const s = document.createElement('span'); s.textContent = n.text;
+    const tm = document.createElement('time'); tm.textContent = new Date(n.at).toLocaleDateString(); s.appendChild(tm);
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Remove'; b.setAttribute('aria-label', 'Remove note');
+    b.onclick = () => { notes.splice(i, 1); saveNotes(); renderLists(); };
+    li.append(s, b); nl.appendChild(li);
+  });
+  const rl = $('#remList'); rl.innerHTML = '';
+  const open = reminders.filter((r) => !r.done).sort((a, b) => a.at - b.at);
+  if (!open.length) { const p = document.createElement('li'); p.className = 'empty'; p.style.background = 'none'; p.style.padding = '0'; p.textContent = 'No reminders. Try "remind me at 6 pm to buy milk".'; rl.appendChild(p); }
+  open.forEach((r) => {
+    const li = document.createElement('li');
+    const s = document.createElement('span'); s.textContent = r.what;
+    const tm = document.createElement('time'); tm.textContent = fmtWhen(new Date(r.at)); s.appendChild(tm);
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Remove'; b.setAttribute('aria-label', 'Remove reminder');
+    b.onclick = () => { reminders = reminders.filter((x) => x.id !== r.id); saveReminders(); renderLists(); };
+    li.append(s, b); rl.appendChild(li);
+  });
+  $('#storeNote').textContent = memoryMode === 'cloud'
+    ? 'Memory and reminders are saved privately to your Claude account.'
+    : 'Memory and reminders are saved in this browser only.';
+}
+function openSheet() {
+  $('#optName').value = prefs.name;
+  $('#optVoice').checked = prefs.voice;
+  $('#optDeep').checked = prefs.deep;
+  forgetArmed = false; $('#btnForget').textContent = 'Forget everything';
+  renderLists();
+  sheet.hidden = false;
+  $('#btnDone').focus();
+}
+function closeSheet() {
+  prefs.name = $('#optName').value.trim();
+  prefs.voice = $('#optVoice').checked;
+  prefs.deep = $('#optDeep').checked;
+  local.set('prefs', prefs);
+  if (!prefs.voice) stopSpeaking();
+  sheet.hidden = true;
+  setStatus();
+}
+$('#btnForget').onclick = () => {
+  if (!forgetArmed) { forgetArmed = true; $('#btnForget').textContent = 'Tap again to erase all'; return; }
+  notes = []; reminders = []; saveNotes(); saveReminders();
+  forgetArmed = false; $('#btnForget').textContent = 'Erased';
+  renderLists();
+};
+$('#btnDone').onclick = closeSheet;
+sheet.addEventListener('click', (e) => { if (e.target === sheet) closeSheet(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !sheet.hidden) closeSheet(); });
+
+/* ---------- wiring ---------- */
+$('#composer').addEventListener('submit', (e) => {
+  e.preventDefault();
+  if (busy) { controller && controller.abort(); return; }
+  const text = input.value; input.value = ''; syncComposer(); send(text);
+});
+input.addEventListener('input', syncComposer);
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#composer').requestSubmit(); }
+});
+micBtn.onclick = () => { unlockSpeech(); listen(); };
+$('#btnSettings').onclick = openSheet;
+$('#btnClear').onclick = clearChat;
+$('#btnVoice').onclick = () => { prefs.voice = !prefs.voice; local.set('prefs', prefs); if (!prefs.voice) stopSpeaking(); else unlockSpeech(); setStatus(); };
+
+setStatus();
+syncComposer();
+renderAll();
+connectMemory();
+setInterval(checkReminders, 20000);
+
+(async () => {
+  try { sample = window.claude ? await window.claude.use('sample') : null; } catch { sample = null; }
+  brainState = sample ? 'ready' : 'off';
+  setStatus();
+})();
+</script>

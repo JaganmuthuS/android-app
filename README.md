@@ -2,7 +2,11 @@
 
 A free personal AI assistant for Android, with voice input, spoken replies and phone controls.
 
-## iPhone (web app)
+## iPhone: easiest option (no setup)
+
+Open **https://claude.ai/artifact/5UTe2BGAJyzCRBGWcz3GzT** in Safari while signed in to Claude. Claude is Jarvis's brain there, so it needs no API keys or GitHub settings. The page source is `claude/jarvis.html`.
+
+## iPhone (web app on GitHub Pages)
 
 1. Open **https://jaganmuthus.github.io/android-app/** in **Safari** on your iPhone.
 2. Tap **Share** (the square with an arrow), then **Add to Home Screen**, then **Add**.
