@@ -36,6 +36,7 @@ test('file work: scoped read, reviewed edit, gate, checkpoints, restore', async 
   const { app, page } = await launch();
   await expect(page.locator('.workspace-pick')).toContainText(path.basename(root));
   await expect(page.getByLabel('Access for Personal')).toHaveValue('none');
+  await expect(page.getByLabel('Access for main folder')).toHaveValue('none');
   await page.getByLabel('Access for Finance').selectOption('read');
   await page.getByLabel('Access for Board').selectOption('edit_ask');
 
@@ -96,5 +97,36 @@ test('blocked folder: Jarvis asks for access instead of reading it', async () =>
   await expect(card).toContainText('Access granted');
   await expect(page.getByLabel('Access for Personal')).toHaveValue('read');
   await page.screenshot({ path: 'test-results/phase3-denied.png' });
+  await app.close();
+});
+
+test('creating folders: inside an edit folder, and at the top of the workspace', async () => {
+  const { app, page } = await launch();
+  await page.getByLabel('Set access for every folder').selectOption('edit_ask');
+  await expect(page.getByLabel('Access for main folder')).toHaveValue('edit_ask');
+  await expect(page.getByLabel('Access for Board')).toHaveValue('edit_ask');
+
+  const input = page.getByLabel('Message Jarvis');
+  await input.fill('Create a folder called Board/2026');
+  await input.press('Enter');
+  await expect(page.locator('.log').filter({ hasText: 'Board/2026 · held for review' })).toBeVisible();
+  await expect(page.locator('.doc-note')).toContainText('Accepting creates the folder Board/2026/');
+  await page.getByRole('button', { name: 'Accept', exact: true }).click();
+  await expect(page.getByText('Changes · 0 open')).toBeVisible();
+  expect(fs.statSync(path.join(root, 'Board/2026')).isDirectory()).toBe(true);
+
+  // A brand-new top-level folder follows the main folder's access and appears in the list.
+  await page.getByRole('button', { name: '+ New lane' }).click();
+  await input.fill('Make a new folder called Reports');
+  await input.press('Enter');
+  await page.getByRole('button', { name: 'Accept', exact: true }).click();
+  await expect(page.getByLabel('Access for Reports')).toHaveValue('edit_ask');
+  expect(fs.statSync(path.join(root, 'Reports')).isDirectory()).toBe(true);
+
+  // A folder made in Finder shows up when you come back to the app.
+  fs.mkdirSync(path.join(root, 'FromFinder'));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(page.getByLabel('Access for FromFinder')).toHaveValue('edit_ask');
+  await page.screenshot({ path: 'test-results/phase3-folders.png' });
   await app.close();
 });

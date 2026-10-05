@@ -89,10 +89,12 @@ function DocumentTab({ changes }: { changes: Change[] }) {
 }
 
 function ChangeView({ change: c }: { change: Change }) {
-  const ext = c.filePath.split('.').pop()?.toUpperCase() ?? '';
+  const ext = c.kind === 'mkdir' || !c.filePath.includes('.') ? '' : c.filePath.split('.').pop()!.toUpperCase();
   let body: React.ReactNode;
   if (c.kind === 'delete') {
     body = <p className="doc-note">{c.status === 'pending' ? 'Accepting moves this file to the Trash. You can put it back from the Trash in Finder.' : c.status === 'rejected' ? 'Kept. The file was not deleted.' : 'Moved to the Trash.'}</p>;
+  } else if (c.kind === 'mkdir') {
+    body = <p className="doc-note">{c.status === 'pending' ? <>Accepting creates the folder <b>{c.filePath}/</b>.</> : c.status === 'rejected' ? 'Not created.' : <>Created the folder <b>{c.filePath}/</b>.</>}</p>;
   } else if (c.kind === 'move') {
     body = <p className="doc-note">{c.filePath} → <b>{c.moveTo}</b>{c.status === 'pending' ? '. Accepting moves the file; Undo moves it back.' : ''}</p>;
   } else {
@@ -110,7 +112,7 @@ function ChangeView({ change: c }: { change: Change }) {
       <div className="doc-meta">
         <strong>{c.filePath}</strong>
         {ext && <span className="tag tag-neutral">{ext}</span>}
-        <span className={`tag ${c.status === 'pending' ? 'tag-accent' : 'tag-neutral'}`}>{c.kind === 'create' ? 'New file' : STATUS_LABEL[c.status]}</span>
+        <span className={`tag ${c.status === 'pending' ? 'tag-accent' : 'tag-neutral'}`}>{c.kind === 'create' ? 'New file' : c.kind === 'mkdir' ? 'New folder' : STATUS_LABEL[c.status]}</span>
       </div>
       <article className="page">{body}</article>
     </>

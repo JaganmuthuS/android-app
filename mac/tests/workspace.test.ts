@@ -25,7 +25,7 @@ beforeEach(() => {
   write('Personal/diary.md', 'private');
   write('readme.txt', 'top level');
   db = new Db(':memory:');
-  ws = new Workspace(db, fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-blobs-')), async (abs) => { trashed.push(abs); fs.rmSync(abs); });
+  ws = new Workspace(db, fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-blobs-')), async (abs) => { trashed.push(abs); fs.rmSync(abs, { recursive: true }); });
   ws.setRoot(root);
   db.setScope('Finance', 'read');
   db.setScope('Board', 'edit_auto');
@@ -185,5 +185,56 @@ describe('agent with tools', () => {
     agent.changesUpdated(laneId);
     expect(db.getLane(laneId)?.status).toBe('done');
     expect(read('Board/Q3-Board.md')).toContain('€4.82M');
+  });
+});
+
+describe('folders', () => {
+  it('creates a folder inside a folder with edit access, after review', async () => {
+    await ws.exec('create_folder', { path: 'Board/2026', reason: 'yearly files' }, ctx());
+    expect(fs.existsSync(path.join(root, 'Board/2026'))).toBe(false);
+    const [c] = db.listChanges(laneId);
+    expect(c).toMatchObject({ kind: 'mkdir', title: 'New folder Board/2026/', status: 'pending' });
+    await ws.decide(c.id, 'accept');
+    expect(fs.statSync(path.join(root, 'Board/2026')).isDirectory()).toBe(true);
+    await ws.decide(c.id, 'undo');
+    expect(fs.existsSync(path.join(root, 'Board/2026'))).toBe(false);
+  });
+
+  it('applies at once when autonomy allows, and nested folders work', async () => {
+    await ws.exec('create_folder', { path: 'Board/a/b/c', reason: 'r' }, ctx('ask_if_risky'));
+    expect(fs.statSync(path.join(root, 'Board/a/b/c')).isDirectory()).toBe(true);
+    expect((await ws.exec('create_folder', { path: 'Board/a', reason: 'r' }, ctx())).result).toMatch(/already exists/);
+  });
+
+  it('a new top-level folder uses the main folder\'s access and then keeps it', async () => {
+    await expect(ws.exec('create_folder', { path: 'Reports', reason: 'r' }, ctx('autonomous'))).rejects.toThrow(/main folder/);
+    db.setScope('', 'edit_auto');
+    await ws.exec('create_folder', { path: 'Reports', reason: 'r' }, ctx('autonomous'));
+    expect(fs.statSync(path.join(root, 'Reports')).isDirectory()).toBe(true);
+    expect(ws.syncScopes().find((s) => s.path === 'Reports')?.mode).toBe('edit_auto');
+    // Writing into a top-level folder that doesn't exist yet also follows the main folder.
+    await ws.exec('write_file', { path: 'Drafts/plan.md', content: '# Plan', reason: 'r' }, ctx('autonomous'));
+    expect(read('Drafts/plan.md')).toBe('# Plan');
+  });
+
+  it('folders made in Finder inherit the main folder\'s access', () => {
+    db.setScope('', 'read');
+    fs.mkdirSync(path.join(root, 'FromFinder'));
+    expect(ws.syncScopes().find((s) => s.path === 'FromFinder')?.mode).toBe('read');
+  });
+
+  it('never writes an empty file in place of a folder via setAll, and setAll covers every folder', () => {
+    ws.setAll('read');
+    expect(new Set(ws.syncScopes().map((s) => s.mode))).toEqual(new Set(['read']));
+  });
+
+  it('checkpoints remove folders made after them, and the restore can be undone', async () => {
+    const cp = db.addCheckpoint(laneId, 0, 'Before edits');
+    await ws.exec('create_folder', { path: 'Board/new', reason: 'r' }, ctx('autonomous'));
+    await ws.exec('write_file', { path: 'Board/new/a.md', content: 'a', reason: 'r' }, ctx('autonomous'));
+    await ws.restore(cp.id);
+    expect(fs.existsSync(path.join(root, 'Board/new'))).toBe(false);
+    await ws.restore(db.listCheckpoints(laneId).at(-1)!.id);
+    expect(read('Board/new/a.md')).toBe('a');
   });
 });

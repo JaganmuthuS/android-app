@@ -15,7 +15,7 @@ export function Sidebar() {
   const memories = useStore((s) => s.memories).filter((m) => m.enabled);
   const scopes = useStore((s) => s.scopes);
   const workspace = useStore((s) => s.settings?.workspace ?? null);
-  const { selectLane, newLane, openSettings, chooseWorkspace, setScope } = useStore.getState();
+  const { selectLane, newLane, openSettings, chooseWorkspace, setScope, setAllScopes } = useStore.getState();
 
   return (
     <aside className="col">
@@ -38,7 +38,15 @@ export function Sidebar() {
         ))}
       </nav>
       <section className="side-block anchor">
-        <h6 style={{ margin: '0 0 12px' }}>Folder access</h6>
+        <div className="access-head">
+          <h6 style={{ margin: 0 }}>Folder access</h6>
+          {workspace && scopes.length > 0 && (
+            <select className="set-all" aria-label="Set access for every folder" value="" onChange={(e) => { if (e.target.value) void setAllScopes(e.target.value as ScopeMode); }}>
+              <option value="">Set all…</option>
+              {MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+          )}
+        </div>
         {!workspace ? (
           <div className="side-empty">
             <p>Choose the folder Jarvis works in. Every folder inside starts with no access.</p>
@@ -48,10 +56,10 @@ export function Sidebar() {
           <div className="scope-list">
             {scopes.map((sc) => (
               <div key={sc.path} className="scope-row">
-                <span title={sc.path || 'Files at the top level of the workspace'}>{sc.path ? `${sc.path}/` : 'Top-level files'}</span>
+                <span title={sc.path ? `${sc.path}/ and everything inside it` : 'Files directly in the workspace folder, and new folders Jarvis creates there'}>{sc.path ? `${sc.path}/` : 'Main folder'}</span>
                 <select
                   className={`scope-select tag tag-${TONE[sc.mode]}`}
-                  aria-label={`Access for ${sc.path || 'top-level files'}`}
+                  aria-label={`Access for ${sc.path || 'main folder'}`}
                   value={sc.mode}
                   onChange={(e) => void setScope(sc.path, e.target.value as ScopeMode)}
                 >

@@ -64,6 +64,7 @@ export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: nu
 
       if (format) {
         if (/diary/i.test(request)) return say(JSON.stringify({ kind: 'answer', title: 'Diary question' }));
+        if (/folder/i.test(request)) return say(JSON.stringify({ kind: 'answer', title: 'New folders' }));
         if (/revenue/i.test(request)) return say(JSON.stringify(FILE_PLAN));
         return say(JSON.stringify(/report|summary|board/i.test(request) ? PLAN : { kind: 'answer', title: 'Quick question' }));
       }
@@ -76,6 +77,10 @@ export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: nu
         return call('replace_text', { path: 'Board/Q3-Board.md', find: '€4.61M, slightly ahead of', replace: '€4.82M, 3.1% above', reason: 'Source: Finance/Sept-close.csv, row 2' });
       }
       if (tools && /diary/i.test(request) && last.role === 'user' && !last.content.startsWith('All steps')) return call('read_file', { path: 'Personal/diary.md' });
+      if (tools && /folder/i.test(request) && last.role === 'user') {
+        const m = request.match(/called (\S+)/);
+        return call('create_folder', { path: m ? m[1] : 'Notes/2026', reason: 'You asked for it' });
+      }
       if (last.content.startsWith('Carry out step')) return say(`Finished: ${last.content.split('"')[1]}.`);
       if (last.content.startsWith('All steps are finished')) return say('The summary is drafted and the email step was handled. Should I file the draft in Board?');
       return say('Paris is the capital of France.');

@@ -68,7 +68,7 @@ export interface Change {
   laneId: string;
   stepIndex: number | null;
   filePath: string;          // relative to the workspace
-  kind: 'edit' | 'create' | 'delete' | 'move';
+  kind: 'edit' | 'create' | 'delete' | 'move' | 'mkdir';
   title: string;
   reason: string;
   before: string | null;     // text before (null: file did not exist)
@@ -149,6 +149,7 @@ export interface JarvisApi {
   chooseWorkspace(): Promise<Settings | null>;
   listScopes(): Promise<FileScope[]>;
   setScope(path: string, mode: ScopeMode): Promise<void>;
+  setAllScopes(mode: ScopeMode): Promise<void>;
   listChanges(laneId: string): Promise<Change[]>;
   decideChange(changeId: string, decision: 'accept' | 'reject' | 'undo'): Promise<void>;
   acceptAll(laneId: string): Promise<void>;

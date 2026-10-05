@@ -1,7 +1,7 @@
 {
   "name": "jarvis-workspace",
   "productName": "JARVIS",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "JARVIS: a macOS desktop agent for documents, folders and research.",
   "private": true,
   "main": "dist-electron/electron/main.js",

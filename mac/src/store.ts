@@ -55,6 +55,8 @@ interface Actions {
   showError(e: unknown): void;
   chooseWorkspace(): Promise<void>;
   setScope(path: string, mode: ScopeMode): Promise<void>;
+  setAllScopes(mode: ScopeMode): Promise<void>;
+  refreshScopes(): Promise<void>;
   decideChange(id: string, d: 'accept' | 'reject' | 'undo'): Promise<void>;
   acceptAll(): Promise<void>;
   focusChange(id: string): void;
@@ -139,6 +141,8 @@ export const useStore = create<Store>((set, get) => {
       set({ lanes, settings, memories, scopes, touches, tab: ui.tab, laneId: ui.laneId });
       await ensureLane();
       set({ ready: true });
+      // Folders made in Finder show up as soon as you come back to Jarvis.
+      window.addEventListener('focus', () => { void get().refreshScopes(); });
       await get().refreshEngine();
     },
     async selectLane(id) {
@@ -205,6 +209,12 @@ export const useStore = create<Store>((set, get) => {
       if (s) { set({ settings: s }); const scopes = await guard(() => api!.listScopes()); if (scopes) set({ scopes }); }
     },
     async setScope(p, mode) { await guard(() => api!.setScope(p, mode)); },
+    async setAllScopes(mode) { await guard(() => api!.setAllScopes(mode)); },
+    async refreshScopes() {
+      if (!get().settings?.workspace) return;
+      const scopes = await guard(() => api!.listScopes());
+      if (scopes) set({ scopes });
+    },
     async decideChange(id, d) { set({ focusedChange: id }); await guard(() => api!.decideChange(id, d)); },
     async acceptAll() { const id = laneId(); if (id) await guard(() => api!.acceptAll(id)); },
     focusChange(id) { set({ focusedChange: id, tab: 'doc' }); void api?.setUiState({ tab: 'doc' }); },

@@ -172,6 +172,15 @@ function registerIpc() {
     });
     if (res.canceled || !res.filePaths[0]) return null;
     workspace.setRoot(res.filePaths[0]);
+    const choice = await dialog.showMessageBox(win!, {
+      type: 'question',
+      message: `What may Jarvis do in “${path.basename(res.filePaths[0])}”?`,
+      detail: 'This applies to the folder and every folder inside it. You can change any folder later in Folder access.',
+      buttons: ['Edit, and ask me before every change', 'Read only', 'Nothing yet, I will choose per folder'],
+      defaultId: 0,
+      cancelId: 2,
+    });
+    workspace.setAll((['edit_ask', 'read', 'none'] as const)[choice.response] ?? 'none');
     const s = db.getSettings();
     emit({ type: 'settings', settings: s });
     return s;
@@ -183,6 +192,10 @@ function registerIpc() {
     if (!workspace.syncScopes().some((x) => x.path === scope)) throw new Error('That folder is not in the workspace.');
     db.setScope(scope, mode);
     emit({ type: 'scopes', scopes: workspace.syncScopes() });
+  });
+  handle('scopes:setAll', (mode: ScopeMode) => {
+    if (!['none', 'read', 'edit_ask', 'edit_auto'].includes(mode)) throw new Error('Unknown access level.');
+    workspace.setAll(mode);
   });
   handle('changes:list', (id: string) => db.listChanges(str(id)));
   handle('changes:decide', async (id: string, decision: 'accept' | 'reject' | 'undo') => {

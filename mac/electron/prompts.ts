@@ -6,7 +6,7 @@ const MODE_LABEL = { none: 'no access', read: 'read only', edit_ask: 'edit, user
 
 export function workspaceSummary(root: string | null, scopes: FileScope[]): string {
   if (!root) return 'No workspace folder is chosen yet, so you cannot use files. If the user asks for file work, tell them to choose a workspace folder with "Workspace" in the title bar.';
-  const lines = scopes.map((s) => `- ${s.path ? `${s.path}/` : '(files at the top level)'}: ${MODE_LABEL[s.mode]}`);
+  const lines = scopes.map((s) => `- ${s.path ? `${s.path}/` : 'the main folder itself (top-level files and new top-level folders)'}: ${MODE_LABEL[s.mode]}`);
   return `The workspace folder is ${root}. Paths in tools are relative to it. Folder access:\n${lines.join('\n')}\nNever try folders with no access; ask the user to grant access instead.`;
 }
 
@@ -17,7 +17,7 @@ export function systemPrompt(memories: Memory[], now = new Date(), workspace = '
     'Tone: neutral and professional. Short sentences. Exact figures. No hedging words, no exclamation marks, no emoji, no butler persona.',
     'Cite a source for every number and claim you state. If you have no source, say so plainly.',
     'Ask instead of guessing when a request is ambiguous.',
-    'You can list, read and search files, and create or edit text and Markdown files, using the tools. Read a file before you describe or change it. Never invent file contents.',
+    'You can list, read and search files, create folders, and create or edit text and Markdown files, using the tools. To make a folder, use create_folder; never write an empty file in its place. Read a file before you describe or change it. Never invent file contents.',
     'Your edits are never applied directly: each one is staged as a change the user reviews, unless their autonomy setting applies it. Keep the existing structure and wording of files; change only what the task needs.',
     'You cannot read Excel, PowerPoint or PDF files or edit Word files yet, and you cannot browse the web yet. Say so when a task needs them.',
     workspace,
@@ -89,6 +89,9 @@ export const TOOLS: ToolSpec[] = [
   tool('write_file', 'Create a new text or Markdown file, or replace a whole small file.', {
     path: { type: 'string', description: 'File path, e.g. Notes/summary.md' }, content: { type: 'string', description: 'Full file content' }, reason: { type: 'string', description: 'Why' },
   }, ['path', 'content', 'reason']),
+  tool('create_folder', 'Create a new folder (and any missing parent folders) inside the workspace.', {
+    path: { type: 'string', description: 'Folder path, e.g. Notes/2026' }, reason: { type: 'string', description: 'Why' },
+  }, ['path', 'reason']),
   tool('move_file', 'Move or rename a file inside the workspace.', { from: { type: 'string', description: 'Current path' }, to: { type: 'string', description: 'New path' }, reason: { type: 'string', description: 'Why' } }, ['from', 'to', 'reason']),
   tool('delete_file', 'Move a file to the Trash. Always waits for the user.', { path: { type: 'string', description: 'File path' }, reason: { type: 'string', description: 'Why' } }, ['path', 'reason']),
 ];

@@ -48,10 +48,10 @@ jobs:
             JARVIS-mac-apple-silicon.dmg
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: mac-v0.3
-          name: JARVIS for Mac (Phase 3 preview)
+          tag_name: mac-v0.3.1
+          name: JARVIS for Mac 0.3.1 (Phase 3 + folder fixes)
           body: |
-            Phase 3 preview: choose a workspace folder and set access per folder. Jarvis reads text, Markdown, CSV and Word files, edits text and Markdown files as reviewable changes with inline diffs, saves a checkpoint before every step, and can restore any checkpoint. Files tab and CSV audit log included.
+            Phase 3 preview: choose a workspace folder and set access per folder. Jarvis reads text, Markdown, CSV and Word files, edits text and Markdown files as reviewable changes with inline diffs, saves a checkpoint before every step, and can restore any checkpoint. Files tab and CSV audit log included. 0.3.1: Jarvis can create folders; new top-level folders follow the main folder's access; choosing a workspace asks what access to give; a Set all control; folders made in Finder appear when you return to the app.
             Download **JARVIS-mac-apple-silicon.dmg** (M1 or newer) or **JARVIS-mac.dmg** (any Mac), open it and drag JARVIS to Applications.
             The first time, macOS will block it because it is not notarised: open System Settings → Privacy & Security and click **Open Anyway**.
           files: |

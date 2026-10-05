@@ -33,6 +33,7 @@ const api: JarvisApi = {
   chooseWorkspace: call('workspace:choose') as JarvisApi['chooseWorkspace'],
   listScopes: call('scopes:list') as JarvisApi['listScopes'],
   setScope: call('scopes:set') as JarvisApi['setScope'],
+  setAllScopes: call('scopes:setAll') as JarvisApi['setAllScopes'],
   listChanges: call('changes:list') as JarvisApi['listChanges'],
   decideChange: call('changes:decide') as JarvisApi['decideChange'],
   acceptAll: call('changes:acceptAll') as JarvisApi['acceptAll'],

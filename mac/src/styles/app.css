@@ -229,3 +229,6 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; background:
 .doc-note { font-size: 14px; margin: 0; }
 .nums { font-variant-numeric: tabular-nums; }
 .error-card .btn { align-self: flex-start; margin-top: 4px; }
+
+.access-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
+.set-all { font: inherit; font-size: 11px; color: var(--color-accent-700); background: transparent; border: 1px solid var(--color-divider); padding: 2px 4px; cursor: pointer; }

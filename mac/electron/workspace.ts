@@ -19,6 +19,7 @@ const LATER_EXT: Record<string, string> = { '.xlsx': 'Excel', '.xls': 'Excel', '
 const SKIP_DIRS = new Set(['node_modules', '.git', '.jarvis']);
 const MAX_READ = 60_000;
 const RISKY_PATH = /financ|legal|contract|invoice|budget|board|payroll|tax/i;
+const DIR_MARK = 'dir:';
 
 export const formatOf = (p: string) => {
   const ext = path.extname(p).toLowerCase();
@@ -54,7 +55,9 @@ export class Workspace {
     const have = new Map(this.db.listScopes().map((s) => [s.path, s.mode]));
     const dirs = fs.readdirSync(root, { withFileTypes: true })
       .filter((d) => d.isDirectory() && !d.name.startsWith('.') && !SKIP_DIRS.has(d.name)).map((d) => d.name);
-    for (const p of ['', ...dirs]) if (!have.has(p)) this.db.setScope(p, 'none');
+    if (!have.has('')) this.db.setScope('', 'none');
+    const inherit = have.get('') ?? 'none';
+    for (const p of dirs) if (!have.has(p)) this.db.setScope(p, inherit);
     const keep = new Set(['', ...dirs]);
     return this.db.listScopes().filter((s) => keep.has(s.path));
   }
@@ -63,6 +66,11 @@ export class Workspace {
     this.db.setSettings({ workspace: dir });
     this.db.clearScopes();
     this.syncScopes();
+    this.changed('scopes');
+  }
+
+  setAll(mode: ScopeMode) {
+    for (const s of this.syncScopes()) this.db.setScope(s.path, mode);
     this.changed('scopes');
   }
 
@@ -89,8 +97,10 @@ export class Workspace {
     if (parts.some((p) => SKIP_DIRS.has(p))) throw new ScopeError(`${relative} is a protected folder.`, parts[0], 'read');
     const isTopDir = parts.length === 1 && fs.existsSync(real) && fs.statSync(real).isDirectory();
     const scope = parts.length > 1 || isTopDir ? parts[0] : '';
-    const mode = this.modeFor(scope);
-    const label = scope ? `${scope}/` : 'the top level of the workspace';
+    // A top-level folder that doesn't exist yet would be created inside the main folder, so the main folder's access applies.
+    const known = this.db.listScopes().some((x) => x.path === scope);
+    const mode = known || !scope || fs.existsSync(path.join(rootReal, scope)) ? this.modeFor(scope) : this.modeFor('');
+    const label = scope ? `${scope}/` : 'the main folder (top level)';
     if (op === 'read' && mode === 'none') throw new ScopeError(`Jarvis has no access to ${label}.`, scope, 'read');
     if (op === 'write' && (mode === 'none' || mode === 'read')) {
       throw new ScopeError(`${label} is ${mode === 'read' ? 'read only' : 'not accessible'}, so Jarvis can't change ${relative || 'it'}.`, scope, 'edit_ask');
@@ -125,6 +135,7 @@ export class Workspace {
       case 'replace_text': return this.replaceText(ctx, s('path'), s('find'), s('replace'), s('reason'));
       case 'move_file': return this.stageMove(ctx, s('from'), s('to'), s('reason'));
       case 'delete_file': return this.stageDelete(ctx, s('path'), s('reason'));
+      case 'create_folder': return this.stageFolder(ctx, s('path'), s('reason'));
       default: throw new WorkspaceError(`Unknown tool ${name}.`);
     }
   }
@@ -267,6 +278,23 @@ export class Workspace {
     return this.settle(ctx, change, r.scope);
   }
 
+  private async stageFolder(ctx: ToolContext, rel: string, reason: string) {
+    if (!rel || rel === '.') throw new WorkspaceError('create_folder needs a folder path, e.g. Notes/2026.');
+    const r = this.resolve(rel, 'write');
+    if (fs.existsSync(r.abs)) {
+      if (fs.statSync(r.abs).isDirectory()) return { result: `The folder ${r.rel}/ already exists.` };
+      throw new WorkspaceError(`${r.rel} already exists as a file.`);
+    }
+    if (this.db.listChanges(ctx.laneId).some((c) => c.kind === 'mkdir' && c.filePath === r.rel && c.status === 'pending')) {
+      return { result: `Creating ${r.rel}/ is already waiting for the user's review.` };
+    }
+    const change = this.db.addChange({
+      laneId: ctx.laneId, stepIndex: ctx.stepIndex, filePath: r.rel, kind: 'mkdir', title: `New folder ${r.rel}/`,
+      reason: reason.trim() || 'No reason given.', before: null, after: null, status: 'pending', risk: 'low',
+    });
+    return this.settle(ctx, change, r.scope);
+  }
+
   /** Decide whether a fresh change waits for review or is applied now, and tell the model which. */
   private async settle(ctx: ToolContext, change: Change, scope: string) {
     const folderAsks = this.modeFor(scope) === 'edit_ask';
@@ -282,7 +310,7 @@ export class Workspace {
     }
     this.changed({ changes: ctx.laneId });
     const target = change.moveTo ? `${change.filePath} → ${change.moveTo}` : change.filePath;
-    const verb = change.kind === 'create' ? 'Created' : change.kind === 'delete' ? 'Deleted' : change.kind === 'move' ? 'Moved' : 'Edited';
+    const verb = change.kind === 'create' || change.kind === 'mkdir' ? 'Created' : change.kind === 'delete' ? 'Deleted' : change.kind === 'move' ? 'Moved' : 'Edited';
     return auto
       ? { result: `Applied: ${change.title} (${target}).`, log: [verb, `${target} · applied`] as [string, string] }
       : { result: `Staged for the user's review, not applied yet: ${change.title} (${target}). Continue; the user reviews changes in the change list.`, log: [verb, `${target} · held for review`] as [string, string] };
@@ -317,8 +345,15 @@ export class Workspace {
     const cp = this.ensureCheckpoint(laneId);
     if (this.db.hasSnapshot(cp.id, rel)) return;
     const abs = path.join(fs.realpathSync(this.root()!), rel);
-    this.db.addSnapshot(cp.id, rel, fs.existsSync(abs) ? this.putBlob(fs.readFileSync(abs)) : null);
+    this.db.addSnapshot(cp.id, rel, this.capture(abs));
     this.changed({ checkpoints: laneId });
+  }
+
+  /** What a checkpoint stores for a path: a content hash, a folder marker, or null when it doesn't exist. */
+  private capture(abs: string): string | null {
+    if (!fs.existsSync(abs)) return null;
+    if (fs.statSync(abs).isDirectory()) return DIR_MARK;
+    return this.putBlob(fs.readFileSync(abs));
   }
 
   private putBlob(bytes: Buffer) {
@@ -335,6 +370,15 @@ export class Workspace {
     if (c.kind === 'edit' && (!exists || readText(r.abs) !== c.before)) throw conflict();
     if (c.kind === 'create' && exists) throw conflict();
     if ((c.kind === 'delete' || c.kind === 'move') && !exists) throw conflict();
+    if (c.kind === 'mkdir') {
+      if (exists && fs.statSync(r.abs).isDirectory()) return;
+      if (exists) throw conflict();
+      this.snapshot(c.laneId, c.filePath);
+      fs.mkdirSync(r.abs, { recursive: true });
+      this.touch(c.laneId, `${c.filePath}/`, 'created');
+      if (!c.filePath.includes(path.sep) && !c.filePath.includes('/')) this.changed('scopes');
+      return;
+    }
     this.snapshot(c.laneId, c.filePath);
     if (c.kind === 'edit' || c.kind === 'create') {
       fs.mkdirSync(path.dirname(r.abs), { recursive: true });
@@ -369,6 +413,11 @@ export class Workspace {
       if (!fs.existsSync(to.abs) || fs.existsSync(r.abs)) throw changedSince();
       this.snapshot(c.laneId, to.rel);
       fs.renameSync(to.abs, r.abs);
+    } else if (c.kind === 'mkdir') {
+      if (!fs.existsSync(r.abs)) return;
+      if (fs.readdirSync(r.abs).length) throw new WorkspaceError(`${c.filePath}/ is no longer empty, so it can't be removed. Use a checkpoint instead.`);
+      this.snapshot(c.laneId, c.filePath);
+      fs.rmdirSync(r.abs);
     } else {
       throw new WorkspaceError(`${c.filePath} is in the Trash. Put it back from the Trash in Finder, or restore a checkpoint.`);
     }
@@ -385,18 +434,23 @@ export class Workspace {
     // Check access and blobs before touching anything.
     for (const [rel, h] of targets) {
       this.resolve(rel, 'write');
-      if (h && !fs.existsSync(path.join(this.blobDir, h))) throw new WorkspaceError(`The saved copy of ${rel} is missing, so this checkpoint can't be restored.`);
+      if (h && h !== DIR_MARK && !fs.existsSync(path.join(this.blobDir, h))) throw new WorkspaceError(`The saved copy of ${rel} is missing, so this checkpoint can't be restored.`);
     }
     const undoCp = this.db.addCheckpoint(cp.laneId, cp.stepIndex, `Before restore to ${hhmm(cp.ts)}`);
-    for (const [rel, h] of targets) {
+    // Folders are restored before the files inside them; removals happen deepest first.
+    const ordered = [...targets].sort(([a], [b]) => a.length - b.length);
+    for (const [rel] of ordered) this.db.addSnapshot(undoCp.id, rel, this.capture(path.join(rootReal, rel)));
+    for (const [rel, h] of ordered) {
       const abs = path.join(rootReal, rel);
-      this.db.addSnapshot(undoCp.id, rel, fs.existsSync(abs) ? this.putBlob(fs.readFileSync(abs)) : null);
-      if (h) {
+      if (h === DIR_MARK) fs.mkdirSync(abs, { recursive: true });
+      else if (h) {
         fs.mkdirSync(path.dirname(abs), { recursive: true });
         fs.writeFileSync(abs, fs.readFileSync(path.join(this.blobDir, h)));
-      } else if (fs.existsSync(abs)) {
-        await this.trash(abs);
       }
+    }
+    for (const [rel, h] of [...ordered].reverse()) {
+      const abs = path.join(rootReal, rel);
+      if (h === null && fs.existsSync(abs)) await this.trash(abs);
     }
     this.db.deleteChangesAfter(cp.laneId, cp.ts);
     for (const c of this.db.listChanges(cp.laneId)) {
