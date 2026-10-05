@@ -13,7 +13,8 @@ export function TitleBar() {
   const lanes = useStore((s) => s.lanes);
   const lane = useStore(currentLane);
   const fallback = useStore((s) => s.settings?.autonomy ?? 'ask_every_change');
-  const { setAutonomy, openSettings } = useStore.getState();
+  const workspace = useStore((s) => s.settings?.workspace ?? null);
+  const { setAutonomy, openSettings, chooseWorkspace } = useStore.getState();
   const autonomy = lane?.autonomy ?? fallback;
   const active = lanes.filter((l) => isBusy(l)).length;
 
@@ -30,7 +31,9 @@ export function TitleBar() {
       </div>
       <div className="workspace">
         <span className="muted">Workspace</span>
-        <strong>Not set yet</strong>
+        <button type="button" className="plain-btn workspace-pick" title={workspace ? `${workspace} · click to change` : 'Choose the folder Jarvis works in'} onClick={() => void chooseWorkspace()}>
+          {workspace ? tildify(workspace) : 'Choose a folder…'}
+        </button>
         <span className="tag tag-neutral" style={{ whiteSpace: 'nowrap' }}>{active} {active === 1 ? 'lane' : 'lanes'} active</span>
       </div>
       <div className="autonomy">
@@ -48,4 +51,10 @@ export function TitleBar() {
       </div>
     </header>
   );
+}
+
+/** Show /Users/name/... as ~/... like Finder does. */
+function tildify(p: string) {
+  const m = p.match(/^\/Users\/[^/]+(\/.*)?$/);
+  return m ? `~${m[1] ?? ''}` : p;
 }

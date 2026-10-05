@@ -53,7 +53,38 @@ export interface Settings {
   model: string;
   autonomy: Autonomy;
   maxParallel: number;
+  workspace: string | null;   // absolute path of the folder Jarvis works in
 }
+
+export type ScopeMode = 'none' | 'read' | 'edit_ask' | 'edit_auto';
+
+/** Access for one top-level folder of the workspace ('' is files at the top level). */
+export interface FileScope { path: string; mode: ScopeMode }
+
+export type ChangeStatus = 'pending' | 'accepted' | 'rejected' | 'auto_applied';
+
+export interface Change {
+  id: string;
+  laneId: string;
+  stepIndex: number | null;
+  filePath: string;          // relative to the workspace
+  kind: 'edit' | 'create' | 'delete' | 'move';
+  title: string;
+  reason: string;
+  before: string | null;     // text before (null: file did not exist)
+  after: string | null;      // text after (null: file removed)
+  moveTo?: string;
+  status: ChangeStatus;
+  risk: 'low' | 'high';
+  ts: number;
+}
+
+export interface Checkpoint { id: string; laneId: string; stepIndex: number; label: string; ts: number }
+
+export type TouchAction = 'read' | 'edited' | 'created' | 'moved' | 'deleted' | 'held' | 'denied';
+export interface FileTouch { laneId: string; laneTitle: string; path: string; action: TouchAction; format: string; ts: number }
+
+export interface AuditEntry { ts: number; laneId: string; tool: string; path: string; result: string }
 
 export interface EngineStatus {
   reachable: boolean;
@@ -83,7 +114,11 @@ export type JarvisEvent =
   | { type: 'steps'; laneId: string; steps: PlanStep[] }
   | { type: 'memories'; memories: Memory[] }
   | { type: 'settings'; settings: Settings }
-  | { type: 'pull'; progress: PullProgress };
+  | { type: 'pull'; progress: PullProgress }
+  | { type: 'scopes'; scopes: FileScope[] }
+  | { type: 'changes'; laneId: string; changes: Change[] }
+  | { type: 'checkpoints'; laneId: string; checkpoints: Checkpoint[] }
+  | { type: 'touches'; touches: FileTouch[] };
 
 export interface JarvisApi {
   platform: string;
@@ -111,6 +146,16 @@ export interface JarvisApi {
   updateMemory(id: string, patch: { text?: string; enabled?: boolean }): Promise<void>;
   deleteMemory(id: string): Promise<void>;
   deleteAllData(): Promise<void>;
+  chooseWorkspace(): Promise<Settings | null>;
+  listScopes(): Promise<FileScope[]>;
+  setScope(path: string, mode: ScopeMode): Promise<void>;
+  listChanges(laneId: string): Promise<Change[]>;
+  decideChange(changeId: string, decision: 'accept' | 'reject' | 'undo'): Promise<void>;
+  acceptAll(laneId: string): Promise<void>;
+  listCheckpoints(laneId: string): Promise<Checkpoint[]>;
+  restoreCheckpoint(checkpointId: string): Promise<void>;
+  listTouches(): Promise<FileTouch[]>;
+  exportAudit(): Promise<string | null>;
   openExternal(url: string): Promise<void>;
   onEvent(listener: (e: JarvisEvent) => void): () => void;
 }
@@ -121,4 +166,5 @@ export const DEFAULT_SETTINGS: Settings = {
   model: RECOMMENDED_MODEL,
   autonomy: 'ask_every_change',
   maxParallel: 2,
+  workspace: null,
 };

@@ -89,7 +89,7 @@ function Chat({ lane }: { lane: Lane }) {
               : <div key={m.id} className="log"><b>Plan</b><span>Replaced by a newer plan</span></div>;
           case 'log': return <div key={m.id} className="log"><b>{String(p.verb)}</b><span>{String(p.what)}</span></div>;
           case 'gate': return <GateCard key={m.id} lane={lane} message={m} />;
-          case 'error': return <div key={m.id} className="error-card" role="alert"><b className="label">Problem</b><span>{String(p.text)}</span></div>;
+          case 'error': return <ErrorCard key={m.id} message={m} />;
           default: return null;
         }
       })}
@@ -185,8 +185,32 @@ function PlanCard({ lane, steps, scope }: { lane: Lane; steps: PlanStep[]; scope
   );
 }
 
+function ErrorCard({ message }: { message: Message }) {
+  const p = message.payload;
+  const grantPath = typeof p.grantPath === 'string' ? p.grantPath : null;
+  const scopes = useStore((s) => s.scopes);
+  const current = grantPath !== null ? scopes.find((x) => x.path === grantPath)?.mode : undefined;
+  const want = p.grantMode === 'read' ? 'read' : 'edit_ask';
+  const granted = current && (want === 'read' ? current !== 'none' : current === 'edit_ask' || current === 'edit_auto');
+  const where = grantPath ? `${grantPath}/` : 'top-level files';
+  return (
+    <div className="error-card" role="alert">
+      <b className="label">{grantPath !== null ? 'No access' : 'Problem'}</b>
+      <span>{String(p.text)}</span>
+      {grantPath !== null && current !== undefined && (
+        granted
+          ? <span className="muted">Access granted. Send the request again to continue.</span>
+          : <button type="button" className="btn btn-secondary btn-sm" onClick={() => void useStore.getState().setScope(grantPath, want)}>
+              {want === 'read' ? `Allow reading ${where}` : `Allow editing ${where} (with review)`}
+            </button>
+      )}
+    </div>
+  );
+}
+
 function GateCard({ lane, message }: { lane: Lane; message: Message }) {
   const { approveGate, skipGate } = useStore.getState();
+  const open = useStore((s) => (s.changes[lane.id] ?? []).filter((c) => c.status === 'pending').length);
   const state = String(message.payload.state);
   const pending = state === 'pending' && lane.status === 'awaiting_gate';
   return (
@@ -198,8 +222,9 @@ function GateCard({ lane, message }: { lane: Lane; message: Message }) {
       <div className="gate-actions">
         {pending ? (
           <>
-            <button type="button" className="btn btn-primary" onClick={() => void approveGate()}>Approve step</button>
+            <button type="button" className="btn btn-primary" disabled={open > 0} onClick={() => void approveGate()}>Approve step</button>
             <button type="button" className="btn btn-secondary" onClick={() => void skipGate()}>Skip it</button>
+            {open > 0 && <span>Review {open} open change{open > 1 ? 's' : ''} first</span>}
           </>
         ) : (
           <span className="tag tag-accent">{state === 'approved' ? 'Approved' : state === 'skipped' ? 'Skipped' : 'Replaced by a newer request'}</span>

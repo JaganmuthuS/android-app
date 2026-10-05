@@ -11,16 +11,17 @@ type ChatOpts = { messages: ChatMessage[]; format?: object; onText?: (t: string)
 function fakeModel(triage: object, opts: { hang?: boolean } = {}) {
   const calls: ChatOpts[] = [];
   const model = {
-    async chat(o: ChatOpts) {
+    async chat(o: ChatOpts) { return (await model.round(o)).content; },
+    async round(o: ChatOpts) {
       calls.push(o);
-      if (o.format) return JSON.stringify(triage);
+      if (o.format) return { content: JSON.stringify(triage), toolCalls: [] };
       if (opts.hang) {
         await new Promise((_, reject) => o.signal?.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); }));
       }
       const last = o.messages.at(-1)!.content;
       const text = last.startsWith('Carry out step') ? `Result for: ${last.split('"')[1]}` : 'Here is the answer.';
       o.onText?.(text);
-      return text;
+      return { content: text, toolCalls: [] };
     },
   };
   return { model: model as unknown as Ollama, calls };

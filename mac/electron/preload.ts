@@ -30,6 +30,16 @@ const api: JarvisApi = {
   deleteMemory: call('memory:delete') as JarvisApi['deleteMemory'],
   deleteAllData: call('data:deleteAll') as JarvisApi['deleteAllData'],
   openExternal: call('open:external') as JarvisApi['openExternal'],
+  chooseWorkspace: call('workspace:choose') as JarvisApi['chooseWorkspace'],
+  listScopes: call('scopes:list') as JarvisApi['listScopes'],
+  setScope: call('scopes:set') as JarvisApi['setScope'],
+  listChanges: call('changes:list') as JarvisApi['listChanges'],
+  decideChange: call('changes:decide') as JarvisApi['decideChange'],
+  acceptAll: call('changes:acceptAll') as JarvisApi['acceptAll'],
+  listCheckpoints: call('checkpoints:list') as JarvisApi['listCheckpoints'],
+  restoreCheckpoint: call('checkpoints:restore') as JarvisApi['restoreCheckpoint'],
+  listTouches: call('touches:list') as JarvisApi['listTouches'],
+  exportAudit: call('audit:export') as JarvisApi['exportAudit'],
   onEvent(listener) {
     const h = (_e: IpcRendererEvent, ev: JarvisEvent) => listener(ev);
     ipcRenderer.on('jarvis:event', h);

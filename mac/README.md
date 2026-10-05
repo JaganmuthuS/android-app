@@ -2,22 +2,21 @@
 
 A desktop agent for documents, folders and research, built from `CLAUDE_CODE_PROMPT.md` and the `JARVIS Workspace` design.
 
-## Status: Phase 2 of 8
+## Status: Phase 3 of 8
 
-**Works now**
-- Lanes and chat are saved on your Mac in a SQLite database (`~/Library/Application Support/JARVIS/jarvis.db`).
-- Replies stream in word by word from a **free local AI model** through [Ollama](https://ollama.com). Nothing you type leaves your Mac.
-- A question gets a direct answer. A task gets a **plan first**: 3 to 8 steps plus a scope line, and nothing runs until you approve it.
-- **Edit steps** before approving: rewrite, reorder, delete, add, or mark a step as gated.
-- Steps that send, email, export, delete, publish or overwrite are **gated**. Jarvis stops and asks every time, at every autonomy level.
-- Autonomy: under **Autonomous**, plans start without approval, but gates still ask.
-- **Stop** pauses a lane; **Resume** carries on from the same step. Lanes interrupted by quitting the app come back paused.
-- Several lanes can run, up to the limit you set (1 to 4); extra lanes queue.
-- **Memory**: add, switch off or delete memories in Settings. Every lane follows the enabled ones.
-- **Settings**: engine status, model choice and download progress, Ollama address, default autonomy, parallel lanes, and "Delete all local data".
-- macOS notifications when a lane is waiting for you and JARVIS isn't the front window.
+**New in Phase 3: files**
+- **Workspace**: click "Workspace" in the title bar to choose the folder Jarvis works in.
+- **Folder access**: every folder inside starts at **No access**. Set each one in the left column to **Read only**, **Edit · ask** (every change waits for you) or **Edit · auto** (your autonomy level decides). Access is checked in the main process for every file action, with symlinks resolved first, so a link can't reach outside the workspace or into a closed folder.
+- **File tools**: Jarvis can list folders, read and search files, and create, edit, move or delete files. It reads text, Markdown, CSV, JSON and Word (.docx) files and edits text and Markdown files. Excel, PowerPoint and PDF support, and Word editing, come in Phase 4.
+- **Changes, not overwrites**: every edit is staged as a change with an inline word-by-word diff in the Document tab, plus the reason and the source. **Accept**, **Reject** and **Undo** each change, or **Accept all**. Under "Ask if risky", small low-risk edits apply at once. Figures in finance or legal files, big edits and anything in an "Edit · ask" folder still wait. Deletions always wait and go to the Trash.
+- **Approval gates** stay blocked while any change in the lane is open.
+- **Checkpoints**: Jarvis saves one before every step and keeps copies of every file it changes. Click a checkpoint and **Restore** to put the files back; the restore saves its own checkpoint first, so it can be undone. Then **Resume** from that step.
+- **Files tab** lists every file read, edited, created, moved, held or blocked. **Export audit log** saves every tool call as a CSV.
+- When Jarvis hits a folder without access, the chat shows an **Allow reading …** button instead of guessing.
 
-**Not yet**: opening or editing files, folder access, changes review, checkpoints, web research and voice. Phases 3 to 7 add them, and the right-hand tabs say so until then.
+**From Phase 2**: lanes, streaming chat, plans you approve or edit, autonomy levels, stop and resume, parallel lanes, memory, settings and notifications.
+
+**Not yet**: Excel, PowerPoint and PDF, Word editing, web research, scheduled jobs and voice.
 
 ### First run
 
@@ -56,9 +55,11 @@ npm run dist       # build the .dmg into mac/release/
 - `electron/agent.ts`: runs lanes: triage, plans, approval, steps, gates, stop and resume, parallel slots
 - `electron/prompts.ts`: what the model is told, the plan's JSON format and the gate rules
 - `electron/ollama.ts`: the local model client (status, download, streaming chat)
+- `electron/workspace.ts`: folder access checks, the file tools, staged changes (apply, undo), checkpoints and restore
 - `electron/db.ts`: SQLite storage using Node's built-in driver
 - `src/store.ts`: the renderer state, fed by events from the main process
 - `src/components/`: the title bar, sidebar, lane column (chat, plan, gates, composer), setup card, settings, workspace tabs and checkpoint bar
 - `tests/agent.test.ts`: the agent's behaviour against a scripted model
+- `tests/workspace.test.ts`: access rules (including symlink escapes), changes, risk and checkpoints
 - `e2e/`: end-to-end tests that drive the real app against a fake Ollama server
 - `src/styles/modernist.css`: the Modernist design system tokens and components; Archivo is bundled locally

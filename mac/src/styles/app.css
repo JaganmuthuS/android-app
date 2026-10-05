@@ -213,3 +213,19 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; background:
 .toast { position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%); max-width: 560px; background: var(--color-text); color: var(--color-bg); padding: 10px 16px; font-size: 13px; box-shadow: var(--shadow-md); }
 .not-app { padding: 40px; }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+/* ---------- phase 3: workspace, access, changes ---------- */
+.workspace-pick { font-weight: 600; max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-bottom: 1px dashed var(--color-neutral-500); }
+.workspace-pick:hover { color: var(--color-accent-700); border-bottom-color: var(--color-accent); }
+.side-empty p { margin: 0 0 10px; }
+.scope-select { appearance: none; -webkit-appearance: none; border: 1px solid transparent; font: inherit; font-size: 11px; cursor: pointer; padding: 3px 10px; border-radius: 0; }
+.scope-select.tag-outline { border-color: var(--color-accent); background: transparent; }
+.scope-select:hover { filter: brightness(0.96); }
+.change.focused { background: var(--color-surface); }
+.change-title { font-weight: 600; font-size: 13px; text-align: left; }
+.change-title:hover { color: var(--color-accent-700); }
+.change-file { font-size: 11px; color: var(--color-neutral-700); overflow-wrap: anywhere; }
+.doc-text { margin: 0; font-family: var(--font-body); font-size: 14px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.doc-note { font-size: 14px; margin: 0; }
+.nums { font-variant-numeric: tabular-nums; }
+.error-card .btn { align-self: flex-start; margin-top: 4px; }

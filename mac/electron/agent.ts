@@ -1,10 +1,12 @@
-// Runs lanes: triage a request, propose a plan, wait for approval, run steps, stop at gates.
+// Runs lanes: triage a request, propose a plan, wait for approval, run steps with file tools, stop at gates.
 import type { Db } from './db';
 import type { ChatMessage, Ollama } from './ollama';
 import { OllamaError } from './ollama';
 import {
-  PLAN_INTRO, PLAN_INTRO_AUTO, SUMMARY_INSTRUCTION, TRIAGE_INSTRUCTION, TRIAGE_SCHEMA, parseTriage, stepInstruction, systemPrompt,
+  MAX_TOOL_ROUNDS, PLAN_INTRO, PLAN_INTRO_AUTO, SUMMARY_INSTRUCTION, TOOLS, TRIAGE_INSTRUCTION, TRIAGE_SCHEMA,
+  parseTriage, stepInstruction, systemPrompt, workspaceSummary,
 } from './prompts';
+import { ScopeError, type Workspace } from './workspace';
 import type { JarvisEvent, Lane, LaneStatus, Message, PlanStep } from '../shared/types';
 
 export const NEW_LANE_TITLE = 'New lane';
@@ -23,6 +25,7 @@ export class Agent {
     private ollama: Ollama,
     private emit: (e: JarvisEvent) => void,
     private notify: (title: string, body: string) => void = () => {},
+    private workspace: Workspace | null = null,
   ) {}
 
   /** After a crash or quit, nothing is mid-run any more. */
@@ -44,9 +47,7 @@ export class Agent {
     const clean = text.trim();
     if (!clean) return;
     if (lane.title === NEW_LANE_TITLE) this.db.updateLane(laneId, { title: firstWords(clean) });
-    for (const m of this.db.listMessages(laneId)) {
-      if (m.kind === 'gate' && m.payload.state === 'pending') this.db.updateMessage(m.id, { ...m.payload, state: 'superseded' });
-    }
+    this.supersedeGates(laneId);
     this.addMessage(laneId, 'user', 'text', { text: clean });
     this.db.replaceSteps(laneId, []);
     this.emitSteps(laneId);
@@ -69,7 +70,11 @@ export class Agent {
     this.emitSteps(laneId);
   }
 
-  async approveGate(laneId: string) { await this.decideGate(laneId, 'approved'); }
+  async approveGate(laneId: string) {
+    const open = this.pendingChanges(laneId);
+    if (open) throw new LaneBusyError(`Review ${open} open change${open > 1 ? 's' : ''} first.`);
+    await this.decideGate(laneId, 'approved');
+  }
   async skipGate(laneId: string) { await this.decideGate(laneId, 'skipped'); }
 
   stop(laneId: string) {
@@ -88,6 +93,32 @@ export class Agent {
     this.emitLanes();
   }
 
+  /** Called after the user accepts, rejects or undoes a change. */
+  changesUpdated(laneId: string) {
+    const lane = this.db.getLane(laneId);
+    if (!lane) return;
+    const open = this.pendingChanges(laneId);
+    if (lane.status === 'awaiting_review' && !open) this.setStatus(laneId, 'done', 'Done', 1);
+    else if (lane.status === 'awaiting_review') this.setStatus(laneId, 'awaiting_review', reviewText(open), lane.progress);
+  }
+
+  async restoreCheckpoint(checkpointId: string) {
+    if (!this.workspace) throw new LaneBusyError('No workspace folder is set.');
+    const cp = this.db.getCheckpoint(checkpointId);
+    if (!cp) throw new LaneBusyError('That checkpoint no longer exists.');
+    if (BUSY.includes(this.mustLane(cp.laneId).status)) throw new LaneBusyError('Stop the lane before restoring a checkpoint.');
+    const { laneId, stepIndex, label } = await this.workspace.restore(checkpointId);
+    const steps = this.db.listSteps(laneId);
+    steps.filter((s) => s.index >= stepIndex).forEach((s) => this.db.updateStep(s.id, { state: 'queued', note: null }));
+    this.supersedeGates(laneId);
+    this.emitSteps(laneId);
+    this.addMessage(laneId, 'system', 'log', { verb: 'Restored', what: `Files are back to ${label}. A checkpoint of the state before the restore was saved.` });
+    const after = this.db.listSteps(laneId);
+    if (after.length) this.setStatus(laneId, 'paused', `Restored to ${label}`, progress(after));
+    else this.setStatus(laneId, 'idle', `Restored to ${label}`, 0);
+    this.emit({ type: 'checkpoints', laneId, checkpoints: this.db.listCheckpoints(laneId) });
+  }
+
   /* ---------- the work ---------- */
 
   private async triage(laneId: string, signal: AbortSignal) {
@@ -95,18 +126,23 @@ export class Agent {
     const history = this.history(laneId);
     const raw = await this.ollama.chat({
       model: settings.model,
-      messages: [{ role: 'system', content: systemPrompt(this.db.listMemories()) }, ...history, { role: 'user', content: TRIAGE_INSTRUCTION }],
+      messages: [{ role: 'system', content: this.system() }, ...history, { role: 'user', content: TRIAGE_INSTRUCTION }],
       format: TRIAGE_SCHEMA,
       temperature: 0.2,
       signal,
     });
     const t = parseTriage(raw);
     const lane = this.mustLane(laneId);
-    if (t.title && lane.title === firstWords(String(history.at(-1)?.content ?? ''))) this.db.updateLane(laneId, { title: t.title });
+    if (t.title && lane.title === firstWords(String(history.at(-1)?.content ?? ''))) {
+      this.db.updateLane(laneId, { title: t.title });
+      this.emitLanes();
+    }
 
     if (t.kind === 'answer') {
-      await this.streamReply(laneId, [{ role: 'system', content: systemPrompt(this.db.listMemories()) }, ...history], signal);
-      this.setStatus(laneId, 'idle', 'Answered', 0);
+      await this.respond(laneId, [{ role: 'system', content: this.system() }, ...history], signal, null);
+      const open = this.pendingChanges(laneId);
+      if (open) this.setStatus(laneId, 'awaiting_review', reviewText(open), 0);
+      else this.setStatus(laneId, 'idle', 'Answered', 0);
       return;
     }
 
@@ -129,8 +165,14 @@ export class Agent {
       const total = steps.length;
       const next = steps.find((s) => s.state === 'queued' || s.state === 'running');
       if (!next) {
-        await this.streamReply(laneId, [...this.context(laneId), { role: 'user', content: SUMMARY_INSTRUCTION }], signal);
-        this.setStatus(laneId, 'done', 'Done', 1);
+        await this.respond(laneId, [...this.context(laneId), { role: 'user', content: SUMMARY_INSTRUCTION }], signal, null, false);
+        const open = this.pendingChanges(laneId);
+        if (open) {
+          this.setStatus(laneId, 'awaiting_review', reviewText(open), 1);
+          this.notify(this.mustLane(laneId).title, `${reviewText(open)}.`);
+        } else {
+          this.setStatus(laneId, 'done', 'Done', 1);
+        }
         return;
       }
       if (next.requiresGate && next.note !== 'approved') {
@@ -139,10 +181,14 @@ export class Agent {
         this.notify(this.mustLane(laneId).title, `Approval needed: ${next.text}`);
         return;
       }
+      if (next.state === 'queued' && this.workspace?.root()) {
+        this.db.addCheckpoint(laneId, next.index, next.index === 0 ? 'Before edits' : `Before step ${next.index + 1}`);
+        this.emit({ type: 'checkpoints', laneId, checkpoints: this.db.listCheckpoints(laneId) });
+      }
       this.db.updateStep(next.id, { state: 'running' });
       this.emitSteps(laneId);
       this.setStatus(laneId, 'running', `Working · step ${next.index + 1} of ${total}`, progress(steps));
-      await this.streamReply(laneId, [...this.context(laneId), { role: 'user', content: stepInstruction(next.index, total, next.text) }], signal, { step: next.index + 1 });
+      await this.respond(laneId, [...this.context(laneId), { role: 'user', content: stepInstruction(next.index, total, next.text) }], signal, next.index, true, { step: next.index + 1 });
       this.db.updateStep(next.id, { state: 'done' });
       this.addMessage(laneId, 'system', 'log', { verb: 'Done', what: `Step ${next.index + 1} · ${next.text}` });
       this.emitSteps(laneId);
@@ -161,6 +207,67 @@ export class Agent {
     this.addMessage(laneId, 'system', 'log', { verb: decision === 'approved' ? 'Approved' : 'Skipped', what: String(gate.payload.text) });
     this.emitSteps(laneId);
     await this.task(laneId, (signal) => this.run(laneId, signal));
+  }
+
+  /**
+   * One reply from the model, with file tools when a workspace is set. Text streams into a
+   * single chat message; every tool call is logged in the chat and the audit log.
+   */
+  private async respond(laneId: string, messages: ChatMessage[], signal: AbortSignal, stepIndex: number | null, useTools = true, extra: Record<string, unknown> = {}) {
+    const msg = this.addMessage(laneId, 'jarvis', 'text', { text: '', streaming: true, ...extra });
+    const tools = useTools && this.workspace?.root() ? TOOLS : undefined;
+    const convo = [...messages];
+    let last = 0;
+    let latest = '';
+    const flush = () => this.emit({ type: 'stream', laneId, messageId: msg.id, text: latest });
+    const deniedScopes = new Set<string>();
+    try {
+      for (let round = 0; ; round++) {
+        const res = await this.ollama.round({
+          model: this.db.getSettings().model,
+          messages: convo,
+          signal,
+          tools: round < MAX_TOOL_ROUNDS ? tools : undefined,
+          onText: (t) => {
+            latest = t;
+            const now = Date.now();
+            if (now - last > 50) { last = now; flush(); }
+          },
+        });
+        if (!res.toolCalls.length || !tools) {
+          latest = res.content || latest;
+          break;
+        }
+        convo.push({ role: 'assistant', content: res.content, tool_calls: res.toolCalls });
+        for (const call of res.toolCalls) {
+          if (signal.aborted) throw abortError();
+          const name = call.function.name;
+          const args = (typeof call.function.arguments === 'string' ? safeJson(call.function.arguments) : call.function.arguments) ?? {};
+          let result: string;
+          try {
+            const out = await this.workspace!.exec(name, args, { laneId, stepIndex, autonomy: this.mustLane(laneId).autonomy });
+            result = out.result;
+            if (out.log) this.addMessage(laneId, 'system', 'log', { verb: out.log[0], what: out.log[1] });
+          } catch (e) {
+            result = `ERROR: ${(e as Error).message}`;
+            if (e instanceof ScopeError && !deniedScopes.has(e.scopePath)) {
+              deniedScopes.add(e.scopePath);
+              this.addMessage(laneId, 'system', 'error', { text: e.message, grantPath: e.scopePath, grantMode: e.needs });
+            } else if (!(e instanceof ScopeError)) {
+              this.addMessage(laneId, 'system', 'log', { verb: 'Failed', what: `${name} · ${(e as Error).message}` });
+            }
+          }
+          convo.push({ role: 'tool', content: result, tool_name: name });
+        }
+        latest = '';
+      }
+      this.db.updateMessage(msg.id, { text: latest || '(no reply)', ...extra });
+    } catch (e) {
+      this.db.updateMessage(msg.id, { text: latest ? `${latest} …` : '', ...extra, interrupted: true });
+      throw e;
+    } finally {
+      this.emit({ type: 'messages', laneId, messages: this.db.listMessages(laneId) });
+    }
   }
 
   /* ---------- helpers ---------- */
@@ -201,29 +308,10 @@ export class Agent {
     }
   }
 
-  private async streamReply(laneId: string, messages: ChatMessage[], signal: AbortSignal, extra: Record<string, unknown> = {}) {
-    const msg = this.addMessage(laneId, 'jarvis', 'text', { text: '', streaming: true, ...extra });
-    let last = 0;
-    let latest = '';
-    const flush = () => this.emit({ type: 'stream', laneId, messageId: msg.id, text: latest });
-    try {
-      const text = await this.ollama.chat({
-        model: this.db.getSettings().model,
-        messages,
-        signal,
-        onText: (t) => {
-          latest = t;
-          const now = Date.now();
-          if (now - last > 50) { last = now; flush(); }
-        },
-      });
-      this.db.updateMessage(msg.id, { text: text || '(no reply)', ...extra });
-    } catch (e) {
-      this.db.updateMessage(msg.id, { text: latest ? `${latest} …` : '', ...extra, interrupted: true });
-      throw e;
-    } finally {
-      this.emit({ type: 'messages', laneId, messages: this.db.listMessages(laneId) });
-    }
+  private system() {
+    const root = this.workspace?.root() ?? null;
+    const scopes = root ? this.workspace!.syncScopes() : [];
+    return systemPrompt(this.db.listMemories(), new Date(), workspaceSummary(root, scopes));
   }
 
   /** The conversation as the model sees it: user requests and Jarvis replies. */
@@ -238,9 +326,19 @@ export class Agent {
     const steps = this.db.listSteps(laneId);
     const plan = steps.map((s) => `${s.index + 1}. ${s.text} [${s.state}]`).join('\n');
     return [
-      { role: 'system', content: `${systemPrompt(this.db.listMemories())}\n\nThe approved plan:\n${plan}` },
+      { role: 'system', content: `${this.system()}\n\nThe approved plan:\n${plan}` },
       ...this.history(laneId),
     ];
+  }
+
+  private pendingChanges(laneId: string) {
+    return this.db.listChanges(laneId).filter((c) => c.status === 'pending').length;
+  }
+
+  private supersedeGates(laneId: string) {
+    for (const m of this.db.listMessages(laneId)) {
+      if (m.kind === 'gate' && m.payload.state === 'pending') this.db.updateMessage(m.id, { ...m.payload, state: 'superseded' });
+    }
   }
 
   private openGate(laneId: string): Message | undefined {
@@ -274,9 +372,15 @@ function progress(steps: PlanStep[]) {
   return steps.filter((s) => s.state === 'done' || s.state === 'skipped').length / steps.length;
 }
 
+const reviewText = (n: number) => `${n} change${n > 1 ? 's' : ''} to review`;
+
 function firstWords(text: string) {
   const words = text.replace(/\s+/g, ' ').trim().split(' ').slice(0, 6).join(' ');
   return words.length > 48 ? `${words.slice(0, 47)}…` : words;
+}
+
+function safeJson(s: string): Record<string, unknown> | null {
+  try { return JSON.parse(s) as Record<string, unknown>; } catch { return null; }
 }
 
 function abortError() {

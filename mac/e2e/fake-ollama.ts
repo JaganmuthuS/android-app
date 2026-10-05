@@ -13,6 +13,15 @@ const PLAN = {
   ],
 };
 
+const FILE_PLAN = {
+  kind: 'plan', title: 'Revenue update', scope: 'Finance (read) · Board (write)',
+  steps: [
+    { text: 'Read Finance/Sept-close.csv', gated: false },
+    { text: 'Update the revenue sentence in Board/Q3-Board.md', gated: false },
+    { text: 'Email the board report to the board', gated: true },
+  ],
+};
+
 export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: number } = {}): Promise<FakeOllama> {
   const state = { installed: opts.installed ?? [] };
   const chunkMs = opts.chunkMs ?? 15;
@@ -45,17 +54,31 @@ export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: nu
       return;
     }
     if (req.url === '/api/chat') {
-      const { model, messages, format } = JSON.parse(body);
+      const { model, messages, format, tools } = JSON.parse(body) as { model: string; messages: { role: string; content: string }[]; format?: object; tools?: unknown[] };
       if (!state.installed.includes(model)) { res.statusCode = 404; return json({ error: `model "${model}" not found` }); }
-      const last: string = messages.at(-1).content;
-      const firstUser: string = messages.find((m: { role: string }) => m.role === 'user')?.content ?? '';
-      let text: string;
-      if (format) text = JSON.stringify(/report|summary|board/i.test(messages.filter((m: { role: string }) => m.role === 'user').at(-2)?.content ?? firstUser) ? PLAN : { kind: 'answer', title: 'Quick question' });
-      else if (last.startsWith('Carry out step')) text = `Finished: ${last.split('"')[1]}.`;
-      else if (last.startsWith('All steps are finished')) text = 'The summary is drafted and the email step was handled. Should I file the draft in Board?';
-      else text = 'Paris is the capital of France.';
-      const words = text.match(/\S+\s*/g) ?? [text];
-      return stream([...words.map((w) => ({ message: { role: 'assistant', content: w }, done: false })), { done: true }]);
+      const users = messages.filter((m) => m.role === 'user').map((m) => m.content);
+      const last = messages.at(-1)!;
+      const request = users.filter((u) => !u.startsWith('Decide how') && !u.startsWith('Carry out') && !u.startsWith('All steps')).at(-1) ?? '';
+      const call = (name: string, args: object) => stream([{ message: { role: 'assistant', content: '', tool_calls: [{ function: { name, arguments: args } }] }, done: false }, { done: true }]);
+      const say = (text: string) => stream([...(text.match(/\S+\s*/g) ?? [text]).map((w) => ({ message: { role: 'assistant', content: w }, done: false })), { done: true }]);
+
+      if (format) {
+        if (/diary/i.test(request)) return say(JSON.stringify({ kind: 'answer', title: 'Diary question' }));
+        if (/revenue/i.test(request)) return say(JSON.stringify(FILE_PLAN));
+        return say(JSON.stringify(/report|summary|board/i.test(request) ? PLAN : { kind: 'answer', title: 'Quick question' }));
+      }
+      if (last.role === 'tool') {
+        if (last.content.startsWith('ERROR')) return say('I could not open that file: Jarvis has no access to it.');
+        return say(`Done. ${last.content.slice(0, 60)}`);
+      }
+      if (tools && last.content.startsWith('Carry out step 1') && /revenue/i.test(request)) return call('read_file', { path: 'Finance/Sept-close.csv' });
+      if (tools && last.content.startsWith('Carry out step 2') && /revenue/i.test(request)) {
+        return call('replace_text', { path: 'Board/Q3-Board.md', find: '€4.61M, slightly ahead of', replace: '€4.82M, 3.1% above', reason: 'Source: Finance/Sept-close.csv, row 2' });
+      }
+      if (tools && /diary/i.test(request) && last.role === 'user' && !last.content.startsWith('All steps')) return call('read_file', { path: 'Personal/diary.md' });
+      if (last.content.startsWith('Carry out step')) return say(`Finished: ${last.content.split('"')[1]}.`);
+      if (last.content.startsWith('All steps are finished')) return say('The summary is drafted and the email step was handled. Should I file the draft in Board?');
+      return say('Paris is the capital of France.');
     }
     res.statusCode = 404;
     res.end();

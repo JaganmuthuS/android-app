@@ -1,11 +1,12 @@
-import { app, BrowserWindow, ipcMain, Notification, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Notification, screen, shell } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Agent } from './agent';
 import { NEW_LANE_TITLE } from './agent';
 import { Db } from './db';
 import { Ollama } from './ollama';
-import type { JarvisEvent, Settings, UiState } from '../shared/types';
+import { Workspace } from './workspace';
+import type { JarvisEvent, ScopeMode, Settings, UiState } from '../shared/types';
 
 const DEFAULT_BOUNDS = { width: 1440, height: 900 };
 const MIN_SIZE = { width: 1180, height: 720 };
@@ -17,6 +18,7 @@ let win: BrowserWindow | null = null;
 let db: Db;
 let agent: Agent;
 let ollama: Ollama;
+let workspace: Workspace;
 
 const emit = (e: JarvisEvent) => { if (win && !win.isDestroyed()) win.webContents.send('jarvis:event', e); };
 
@@ -162,6 +164,53 @@ function registerIpc() {
   });
   handle('memory:delete', (id: string) => { db.deleteMemory(str(id)); emit({ type: 'memories', memories: db.listMemories() }); });
 
+  handle('workspace:choose', async () => {
+    const res = await dialog.showOpenDialog(win!, {
+      title: 'Choose the folder Jarvis works in',
+      buttonLabel: 'Use this folder',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (res.canceled || !res.filePaths[0]) return null;
+    workspace.setRoot(res.filePaths[0]);
+    const s = db.getSettings();
+    emit({ type: 'settings', settings: s });
+    return s;
+  });
+  handle('scopes:list', () => workspace.syncScopes());
+  handle('scopes:set', (p: string, mode: ScopeMode) => {
+    if (!['none', 'read', 'edit_ask', 'edit_auto'].includes(mode)) throw new Error('Unknown access level.');
+    const scope = str(p, 300);
+    if (!workspace.syncScopes().some((x) => x.path === scope)) throw new Error('That folder is not in the workspace.');
+    db.setScope(scope, mode);
+    emit({ type: 'scopes', scopes: workspace.syncScopes() });
+  });
+  handle('changes:list', (id: string) => db.listChanges(str(id)));
+  handle('changes:decide', async (id: string, decision: 'accept' | 'reject' | 'undo') => {
+    if (!['accept', 'reject', 'undo'].includes(decision)) throw new Error('Unknown decision.');
+    const c = await workspace.decide(str(id), decision);
+    agent.changesUpdated(c.laneId);
+  });
+  handle('changes:acceptAll', async (laneId: string) => {
+    const errors: string[] = [];
+    for (const c of db.listChanges(str(laneId)).filter((x) => x.status === 'pending')) {
+      try { await workspace.decide(c.id, 'accept'); } catch (e) { errors.push((e as Error).message); }
+    }
+    agent.changesUpdated(laneId);
+    if (errors.length) throw new Error(errors.join(' '));
+  });
+  handle('checkpoints:list', (id: string) => db.listCheckpoints(str(id)));
+  handle('checkpoints:restore', (id: string) => agent.restoreCheckpoint(str(id)));
+  handle('touches:list', () => db.listTouches());
+  handle('audit:export', async () => {
+    const res = await dialog.showSaveDialog(win!, { title: 'Export the audit log', defaultPath: `jarvis-audit-${new Date().toISOString().slice(0, 10)}.csv` });
+    if (res.canceled || !res.filePath) return null;
+    const q = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    const lanes = new Map(db.listLanes().map((l) => [l.id, l.title]));
+    const rows = db.listAudit().map((a) => [new Date(a.ts).toISOString(), lanes.get(a.laneId) ?? a.laneId, a.tool, a.path, a.result].map(q).join(','));
+    fs.writeFileSync(res.filePath, ['time,lane,tool,path,result', ...rows].join('\n'));
+    return res.filePath;
+  });
+
   handle('data:deleteAll', () => {
     for (const l of db.listLanes()) agent.stop(l.id);
     db.deleteAll();
@@ -180,7 +229,14 @@ app.whenReady().then(() => {
   fs.mkdirSync(app.getPath('userData'), { recursive: true });
   db = new Db(path.join(app.getPath('userData'), 'jarvis.db'));
   ollama = new Ollama(() => process.env.JARVIS_OLLAMA_URL || db.getSettings().ollamaUrl);
-  agent = new Agent(db, ollama, emit, notify);
+  workspace = new Workspace(db, path.join(app.getPath('userData'), 'snapshots'), (abs) => shell.trashItem(abs), (what) => {
+    if (what === 'scopes') emit({ type: 'scopes', scopes: workspace.syncScopes() });
+    else if (what === 'touches') emit({ type: 'touches', touches: db.listTouches() });
+    else if ('changes' in what) emit({ type: 'changes', laneId: what.changes, changes: db.listChanges(what.changes) });
+    else emit({ type: 'checkpoints', laneId: what.checkpoints, checkpoints: db.listCheckpoints(what.checkpoints) });
+  });
+  if (process.env.JARVIS_WORKSPACE && !db.getSettings().workspace) workspace.setRoot(process.env.JARVIS_WORKSPACE);
+  agent = new Agent(db, ollama, emit, notify, workspace);
   agent.recover();
   registerIpc();
   createWindow();

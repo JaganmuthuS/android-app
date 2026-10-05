@@ -116,7 +116,8 @@ export function SettingsDialog() {
 
         <section className="settings-section">
           <h6>Data</h6>
-          <p className="field-hint">Lanes, chats, memories and settings are stored only on this Mac.</p>
+          <p className="field-hint">Lanes, chats, memories, saved file copies and settings are stored only on this Mac.</p>
+          <button type="button" className="btn btn-secondary" onClick={() => void st.exportAudit()}>Export audit log (CSV)</button>
           {confirmWipe ? (
             <div className="row">
               <button type="button" className="btn btn-primary" onClick={() => { void st.deleteAllData(); setConfirmWipe(false); }}>Delete everything</button>

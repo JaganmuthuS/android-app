@@ -1,10 +1,21 @@
+import type { ScopeMode } from '../../shared/types';
 import { isWaiting, useStore } from '../store';
+
+const MODES: { value: ScopeMode; label: string }[] = [
+  { value: 'none', label: 'No access' },
+  { value: 'read', label: 'Read only' },
+  { value: 'edit_ask', label: 'Edit · ask' },
+  { value: 'edit_auto', label: 'Edit · auto' },
+];
+const TONE: Record<ScopeMode, string> = { none: 'outline', read: 'neutral', edit_ask: 'accent', edit_auto: 'accent' };
 
 export function Sidebar() {
   const lanes = useStore((s) => s.lanes);
   const laneId = useStore((s) => s.laneId);
   const memories = useStore((s) => s.memories).filter((m) => m.enabled);
-  const { selectLane, newLane, openSettings } = useStore.getState();
+  const scopes = useStore((s) => s.scopes);
+  const workspace = useStore((s) => s.settings?.workspace ?? null);
+  const { selectLane, newLane, openSettings, chooseWorkspace, setScope } = useStore.getState();
 
   return (
     <aside className="col">
@@ -28,7 +39,29 @@ export function Sidebar() {
       </nav>
       <section className="side-block anchor">
         <h6 style={{ margin: '0 0 12px' }}>Folder access</h6>
-        <p className="side-empty">No folders yet. Jarvis can't open files until folder access arrives in the next update.</p>
+        {!workspace ? (
+          <div className="side-empty">
+            <p>Choose the folder Jarvis works in. Every folder inside starts with no access.</p>
+            <button type="button" className="btn btn-secondary btn-sm" onClick={() => void chooseWorkspace()}>Choose workspace folder</button>
+          </div>
+        ) : (
+          <div className="scope-list">
+            {scopes.map((sc) => (
+              <div key={sc.path} className="scope-row">
+                <span title={sc.path || 'Files at the top level of the workspace'}>{sc.path ? `${sc.path}/` : 'Top-level files'}</span>
+                <select
+                  className={`scope-select tag tag-${TONE[sc.mode]}`}
+                  aria-label={`Access for ${sc.path || 'top-level files'}`}
+                  value={sc.mode}
+                  onChange={(e) => void setScope(sc.path, e.target.value as ScopeMode)}
+                >
+                  {MODES.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </div>
+            ))}
+            {scopes.length === 0 && <p className="side-empty">This folder is empty.</p>}
+          </div>
+        )}
       </section>
       <section className="side-block">
         <h6 style={{ margin: '0 0 8px' }}>Remembers</h6>

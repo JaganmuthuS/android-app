@@ -48,10 +48,10 @@ jobs:
             JARVIS-mac-apple-silicon.dmg
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: mac-v0.2
-          name: JARVIS for Mac (Phase 2 preview)
+          tag_name: mac-v0.3
+          name: JARVIS for Mac (Phase 3 preview)
           body: |
-            Phase 2 preview: real lanes and chat on a free local AI model (Ollama), plans you approve or edit, approval gates, memory and settings. Jarvis cannot open your files yet; that is Phase 3.
+            Phase 3 preview: choose a workspace folder and set access per folder. Jarvis reads text, Markdown, CSV and Word files, edits text and Markdown files as reviewable changes with inline diffs, saves a checkpoint before every step, and can restore any checkpoint. Files tab and CSV audit log included.
             Download **JARVIS-mac-apple-silicon.dmg** (M1 or newer) or **JARVIS-mac.dmg** (any Mac), open it and drag JARVIS to Applications.
             The first time, macOS will block it because it is not notarised: open System Settings → Privacy & Security and click **Open Anyway**.
           files: |

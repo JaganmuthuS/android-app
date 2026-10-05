@@ -1,7 +1,9 @@
 // SQLite storage (Node's built-in driver, so there is no native module to rebuild).
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'crypto';
-import type { Autonomy, Lane, LaneStatus, Memory, Message, MessageKind, PlanStep, Settings, StepState } from '../shared/types';
+import type {
+  AuditEntry, Autonomy, Change, ChangeStatus, Checkpoint, FileScope, FileTouch, Lane, LaneStatus, Memory, Message, MessageKind, PlanStep, ScopeMode, Settings, StepState, TouchAction,
+} from '../shared/types';
 import { DEFAULT_SETTINGS } from '../shared/types';
 
 const SCHEMA = `
@@ -23,6 +25,26 @@ CREATE TABLE IF NOT EXISTS memories (
   id TEXT PRIMARY KEY, text TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS scopes (path TEXT PRIMARY KEY, mode TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS changes (
+  id TEXT PRIMARY KEY, lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE, step_index INTEGER,
+  file_path TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, reason TEXT NOT NULL,
+  before TEXT, after TEXT, move_to TEXT, status TEXT NOT NULL, risk TEXT NOT NULL, ts INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS changes_lane ON changes(lane_id, ts);
+CREATE TABLE IF NOT EXISTS checkpoints (
+  id TEXT PRIMARY KEY, lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
+  step_index INTEGER NOT NULL, label TEXT NOT NULL, ts INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS checkpoint_files (
+  checkpoint_id TEXT NOT NULL REFERENCES checkpoints(id) ON DELETE CASCADE,
+  path TEXT NOT NULL, sha TEXT, PRIMARY KEY (checkpoint_id, path)
+);
+CREATE TABLE IF NOT EXISTS touches (
+  lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE, path TEXT NOT NULL,
+  action TEXT NOT NULL, format TEXT NOT NULL, ts INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit (ts INTEGER NOT NULL, lane_id TEXT NOT NULL, tool TEXT NOT NULL, path TEXT NOT NULL, result TEXT NOT NULL);
 `;
 
 type Row = Record<string, unknown>;
@@ -141,5 +163,90 @@ export class Db {
   }
   deleteMemory(id: string) { this.run('DELETE FROM memories WHERE id = ?', id); }
 
-  deleteAll() { this.db.exec('DELETE FROM messages; DELETE FROM plan_steps; DELETE FROM lanes; DELETE FROM memories; DELETE FROM kv;'); }
+  /* ---------- folder scopes ---------- */
+  listScopes(): FileScope[] { return this.all('SELECT * FROM scopes ORDER BY path').map((r) => ({ path: String(r.path), mode: r.mode as ScopeMode })); }
+  setScope(path: string, mode: ScopeMode) {
+    this.run('INSERT INTO scopes(path, mode) VALUES(?, ?) ON CONFLICT(path) DO UPDATE SET mode = excluded.mode', path, mode);
+  }
+  clearScopes() { this.run('DELETE FROM scopes'); }
+
+  /* ---------- changes ---------- */
+  private toChange(r: Row): Change {
+    return {
+      id: String(r.id), laneId: String(r.lane_id), stepIndex: r.step_index == null ? null : Number(r.step_index), filePath: String(r.file_path),
+      kind: r.kind as Change['kind'], title: String(r.title), reason: String(r.reason),
+      before: r.before == null ? null : String(r.before), after: r.after == null ? null : String(r.after),
+      moveTo: r.move_to == null ? undefined : String(r.move_to), status: r.status as ChangeStatus, risk: r.risk as Change['risk'], ts: Number(r.ts),
+    };
+  }
+  listChanges(laneId: string): Change[] { return this.all('SELECT * FROM changes WHERE lane_id = ? ORDER BY ts, rowid', laneId).map((r) => this.toChange(r)); }
+  getChange(id: string): Change | undefined { const r = this.get('SELECT * FROM changes WHERE id = ?', id); return r && this.toChange(r); }
+  pendingChangeFor(laneId: string, filePath: string): Change | undefined {
+    const r = this.get("SELECT * FROM changes WHERE lane_id = ? AND file_path = ? AND status = 'pending' ORDER BY ts DESC LIMIT 1", laneId, filePath);
+    return r && this.toChange(r);
+  }
+  addChange(c: Omit<Change, 'id' | 'ts'>): Change {
+    const id = randomUUID();
+    const ts = Date.now();
+    this.run('INSERT INTO changes(id, lane_id, step_index, file_path, kind, title, reason, before, after, move_to, status, risk, ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      id, c.laneId, c.stepIndex, c.filePath, c.kind, c.title, c.reason, c.before, c.after, c.moveTo ?? null, c.status, c.risk, ts);
+    return this.getChange(id)!;
+  }
+  updateChange(id: string, patch: Partial<Pick<Change, 'title' | 'reason' | 'after' | 'status' | 'risk' | 'kind'>>) {
+    const cols: Record<string, string> = { title: 'title', reason: 'reason', after: 'after', status: 'status', risk: 'risk', kind: 'kind' };
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined || !cols[k]) continue;
+      this.run(`UPDATE changes SET ${cols[k]} = ? WHERE id = ?`, v as string | null, id);
+    }
+  }
+  deleteChangesAfter(laneId: string, ts: number) { this.run("DELETE FROM changes WHERE lane_id = ? AND ts >= ? AND status = 'pending'", laneId, ts); }
+
+  /* ---------- checkpoints ---------- */
+  private toCheckpoint(r: Row): Checkpoint { return { id: String(r.id), laneId: String(r.lane_id), stepIndex: Number(r.step_index), label: String(r.label), ts: Number(r.ts) }; }
+  listCheckpoints(laneId: string): Checkpoint[] { return this.all('SELECT * FROM checkpoints WHERE lane_id = ? ORDER BY ts, rowid', laneId).map((r) => this.toCheckpoint(r)); }
+  getCheckpoint(id: string): Checkpoint | undefined { const r = this.get('SELECT * FROM checkpoints WHERE id = ?', id); return r && this.toCheckpoint(r); }
+  addCheckpoint(laneId: string, stepIndex: number, label: string): Checkpoint {
+    const id = randomUUID();
+    // keep checkpoints strictly ordered even within one millisecond
+    const last = this.get('SELECT MAX(ts) AS t FROM checkpoints WHERE lane_id = ?', laneId);
+    const ts = Math.max(Date.now(), Number(last?.t ?? 0) + 1);
+    this.run('INSERT INTO checkpoints(id, lane_id, step_index, label, ts) VALUES(?,?,?,?,?)', id, laneId, stepIndex, label, ts);
+    return this.getCheckpoint(id)!;
+  }
+  latestCheckpoint(laneId: string): Checkpoint | undefined {
+    const r = this.get('SELECT * FROM checkpoints WHERE lane_id = ? ORDER BY ts DESC, rowid DESC LIMIT 1', laneId);
+    return r && this.toCheckpoint(r);
+  }
+  hasSnapshot(checkpointId: string, path: string) { return !!this.get('SELECT 1 FROM checkpoint_files WHERE checkpoint_id = ? AND path = ?', checkpointId, path); }
+  addSnapshot(checkpointId: string, path: string, sha: string | null) {
+    this.run('INSERT OR IGNORE INTO checkpoint_files(checkpoint_id, path, sha) VALUES(?,?,?)', checkpointId, path, sha);
+  }
+  /** For every file changed at or after `ts` in this lane: its content at that moment (the earliest snapshot). */
+  snapshotsSince(laneId: string, ts: number): Map<string, string | null> {
+    const rows = this.all(`SELECT f.path, f.sha FROM checkpoint_files f JOIN checkpoints c ON c.id = f.checkpoint_id
+      WHERE c.lane_id = ? AND c.ts >= ? ORDER BY c.ts DESC, c.rowid DESC`, laneId, ts);
+    const out = new Map<string, string | null>();
+    for (const r of rows) out.set(String(r.path), r.sha == null ? null : String(r.sha)); // later rows (earlier checkpoints) win
+    return out;
+  }
+
+  /* ---------- file activity and audit ---------- */
+  addTouch(laneId: string, path: string, action: TouchAction, format: string) {
+    this.run('INSERT INTO touches(lane_id, path, action, format, ts) VALUES(?,?,?,?,?)', laneId, path, action, format, Date.now());
+  }
+  listTouches(): FileTouch[] {
+    return this.all(`SELECT t.*, l.title AS lane_title FROM touches t JOIN lanes l ON l.id = t.lane_id ORDER BY t.ts DESC LIMIT 500`).map((r) => ({
+      laneId: String(r.lane_id), laneTitle: String(r.lane_title), path: String(r.path), action: r.action as TouchAction, format: String(r.format), ts: Number(r.ts),
+    }));
+  }
+  addAudit(laneId: string, tool: string, path: string, result: string) {
+    this.run('INSERT INTO audit(ts, lane_id, tool, path, result) VALUES(?,?,?,?,?)', Date.now(), laneId, tool, path, result.slice(0, 500));
+  }
+  listAudit(): AuditEntry[] {
+    return this.all('SELECT * FROM audit ORDER BY ts').map((r) => ({ ts: Number(r.ts), laneId: String(r.lane_id), tool: String(r.tool), path: String(r.path), result: String(r.result) }));
+  }
+
+  deleteAll() {
+    this.db.exec('DELETE FROM messages; DELETE FROM plan_steps; DELETE FROM changes; DELETE FROM checkpoint_files; DELETE FROM checkpoints; DELETE FROM touches; DELETE FROM audit; DELETE FROM lanes; DELETE FROM memories; DELETE FROM scopes; DELETE FROM kv;');
+  }
 }

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { api } from './api';
 import type {
-  Autonomy, EngineStatus, JarvisEvent, Lane, Memory, Message, PlanStep, PullProgress, Settings, UiState,
+  Autonomy, Change, Checkpoint, EngineStatus, FileScope, FileTouch, JarvisEvent, Lane, Memory, Message, PlanStep, PullProgress, ScopeMode, Settings, UiState,
 } from '../shared/types';
 
 type Tab = UiState['tab'];
@@ -21,6 +21,12 @@ interface State {
   pull: PullProgress | null;
   settingsOpen: boolean;
   toast: string | null;
+  scopes: FileScope[];
+  changes: Record<string, Change[]>;
+  checkpoints: Record<string, Checkpoint[]>;
+  touches: FileTouch[];
+  focusedChange: string | null;
+  cpSel: string | null;
 }
 
 interface Actions {
@@ -47,6 +53,15 @@ interface Actions {
   deleteAllData(): Promise<void>;
   openSettings(open: boolean): void;
   showError(e: unknown): void;
+  chooseWorkspace(): Promise<void>;
+  setScope(path: string, mode: ScopeMode): Promise<void>;
+  decideChange(id: string, d: 'accept' | 'reject' | 'undo'): Promise<void>;
+  acceptAll(): Promise<void>;
+  focusChange(id: string): void;
+  pickCheckpoint(id: string): void;
+  restore(): Promise<void>;
+  exportAudit(): Promise<void>;
+  notice(msg: string): void;
 }
 
 export type Store = State & Actions;
@@ -85,13 +100,20 @@ export const useStore = create<Store>((set, get) => {
         set({ pull: e.progress });
         if (e.progress.done) void get().refreshEngine();
         break;
+      case 'scopes': set({ scopes: e.scopes }); break;
+      case 'changes': set((s) => ({ changes: { ...s.changes, [e.laneId]: e.changes } })); break;
+      case 'checkpoints': set((s) => ({ checkpoints: { ...s.checkpoints, [e.laneId]: e.checkpoints } })); break;
+      case 'touches': set({ touches: e.touches }); break;
     }
   };
 
   const loadLane = async (id: string) => {
     if (!api) return;
-    const [messages, steps] = await Promise.all([api.listMessages(id), api.listSteps(id)]);
-    set((s) => ({ messages: { ...s.messages, [id]: messages }, steps: { ...s.steps, [id]: steps } }));
+    const [messages, steps, changes, checkpoints] = await Promise.all([api.listMessages(id), api.listSteps(id), api.listChanges(id), api.listCheckpoints(id)]);
+    set((s) => ({
+      messages: { ...s.messages, [id]: messages }, steps: { ...s.steps, [id]: steps },
+      changes: { ...s.changes, [id]: changes }, checkpoints: { ...s.checkpoints, [id]: checkpoints },
+    }));
   };
 
   /** Keep a valid lane selected; create the first one on a fresh install. */
@@ -106,18 +128,21 @@ export const useStore = create<Store>((set, get) => {
   return {
     ready: false, lanes: [], laneId: null, tab: 'doc', messages: {}, steps: {}, streams: {}, drafts: {},
     memories: [], settings: null, engine: null, pull: null, settingsOpen: false, toast: null,
+    scopes: [], changes: {}, checkpoints: {}, touches: [], focusedChange: null, cpSel: null,
 
     async init() {
       if (!api) return;
       api.onEvent(onEvent);
-      const [ui, lanes, settings, memories] = await Promise.all([api.getUiState(), api.listLanes(), api.getSettings(), api.listMemories()]);
-      set({ lanes, settings, memories, tab: ui.tab, laneId: ui.laneId });
+      const [ui, lanes, settings, memories, scopes, touches] = await Promise.all([
+        api.getUiState(), api.listLanes(), api.getSettings(), api.listMemories(), api.listScopes(), api.listTouches(),
+      ]);
+      set({ lanes, settings, memories, scopes, touches, tab: ui.tab, laneId: ui.laneId });
       await ensureLane();
       set({ ready: true });
       await get().refreshEngine();
     },
     async selectLane(id) {
-      set({ laneId: id });
+      set({ laneId: id, focusedChange: null, cpSel: null });
       void api?.setUiState({ laneId: id });
       await guard(() => loadLane(id));
     },
@@ -175,6 +200,29 @@ export const useStore = create<Store>((set, get) => {
       await ensureLane();
     },
     openSettings(open) { set({ settingsOpen: open }); if (open) void get().refreshEngine(); },
+    async chooseWorkspace() {
+      const s = await guard(() => api!.chooseWorkspace());
+      if (s) { set({ settings: s }); const scopes = await guard(() => api!.listScopes()); if (scopes) set({ scopes }); }
+    },
+    async setScope(p, mode) { await guard(() => api!.setScope(p, mode)); },
+    async decideChange(id, d) { set({ focusedChange: id }); await guard(() => api!.decideChange(id, d)); },
+    async acceptAll() { const id = laneId(); if (id) await guard(() => api!.acceptAll(id)); },
+    focusChange(id) { set({ focusedChange: id, tab: 'doc' }); void api?.setUiState({ tab: 'doc' }); },
+    pickCheckpoint(id) { set((s) => ({ cpSel: s.cpSel === id ? null : id })); },
+    async restore() {
+      const id = get().cpSel;
+      if (!id) return;
+      set({ cpSel: null });
+      await guard(() => api!.restoreCheckpoint(id));
+    },
+    async exportAudit() {
+      const file = await guard(() => api!.exportAudit());
+      if (file) get().notice(`Audit log saved to ${file}`);
+    },
+    notice(msg) {
+      set({ toast: msg });
+      setTimeout(() => { if (get().toast === msg) set({ toast: null }); }, 5000);
+    },
     showError(e) {
       const msg = String((e as Error)?.message ?? e).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
       set({ toast: msg });
@@ -189,3 +237,7 @@ export const currentLane = (s: State) => s.lanes.find((l) => l.id === s.laneId) 
 export const isBusy = (lane: Lane | null) => !!lane && (lane.status === 'planning' || lane.status === 'running');
 export const isWaiting = (lane: Lane) => lane.status === 'awaiting_plan_approval' || lane.status === 'awaiting_gate';
 export const engineReady = (s: State) => !!s.engine?.reachable && !!s.engine.modelInstalled;
+const EMPTY_CHANGES: Change[] = [];
+const EMPTY_CPS: Checkpoint[] = [];
+export const laneChanges = (s: State) => (s.laneId ? s.changes[s.laneId] ?? EMPTY_CHANGES : EMPTY_CHANGES);
+export const laneCheckpoints = (s: State) => (s.laneId ? s.checkpoints[s.laneId] ?? EMPTY_CPS : EMPTY_CPS);

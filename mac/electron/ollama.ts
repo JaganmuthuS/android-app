@@ -1,7 +1,12 @@
 // Minimal client for a local Ollama server (https://ollama.com). Everything stays on this Mac.
 import type { EngineStatus, PullProgress } from '../shared/types';
 
-export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
+export interface ToolCall { function: { name: string; arguments: Record<string, unknown> } }
+export interface ChatMessage { role: 'system' | 'user' | 'assistant' | 'tool'; content: string; tool_calls?: ToolCall[]; tool_name?: string }
+export interface ToolSpec { type: 'function'; function: { name: string; description: string; parameters: object } }
+
+/** Ollama's default context is only a few thousand tokens; file contents need more room. */
+export const CONTEXT_TOKENS = 16384;
 
 export class OllamaError extends Error {}
 
@@ -39,6 +44,14 @@ export class Ollama {
 
   /** Stream a chat reply. `onText` receives the whole visible text so far. */
   async chat(opts: { model: string; messages: ChatMessage[]; signal?: AbortSignal; onText?: (text: string) => void; format?: object; temperature?: number }): Promise<string> {
+    return (await this.round(opts)).content;
+  }
+
+  /** One model turn, which may end in tool calls instead of (or as well as) text. */
+  async round(opts: {
+    model: string; messages: ChatMessage[]; signal?: AbortSignal; onText?: (text: string) => void;
+    format?: object; temperature?: number; tools?: ToolSpec[];
+  }): Promise<{ content: string; toolCalls: ToolCall[] }> {
     let res: Response;
     try {
       res = await fetch(this.url('/api/chat'), {
@@ -50,7 +63,8 @@ export class Ollama {
           stream: true,
           think: false,
           format: opts.format,
-          options: { temperature: opts.temperature ?? 0.4 },
+          tools: opts.tools,
+          options: { temperature: opts.temperature ?? 0.4, num_ctx: CONTEXT_TOKENS },
         }),
       });
     } catch (e) {
@@ -62,16 +76,19 @@ export class Ollama {
       let msg = body;
       try { msg = (JSON.parse(body) as { error?: string }).error ?? body; } catch { /* plain text */ }
       if (res.status === 404) throw new OllamaError(`The model "${opts.model}" is not downloaded yet. Open Settings to download it.`);
+      if (/does not support tools/i.test(msg)) throw new OllamaError(`The model "${opts.model}" can't use tools, so it can't work with files. Choose qwen3:8b or qwen3:4b in Settings.`);
       throw new OllamaError(`Ollama returned an error: ${msg || res.status}`);
     }
     let raw = '';
+    const toolCalls: ToolCall[] = [];
     await readLines(res.body, (line) => {
-      const j = JSON.parse(line) as { message?: { content?: string }; error?: string };
+      const j = JSON.parse(line) as { message?: { content?: string; tool_calls?: ToolCall[] }; error?: string };
       if (j.error) throw new OllamaError(j.error);
+      if (j.message?.tool_calls?.length) toolCalls.push(...j.message.tool_calls);
       raw += j.message?.content ?? '';
-      opts.onText?.(stripThinking(raw).trimStart());
+      if (j.message?.content) opts.onText?.(stripThinking(raw).trimStart());
     });
-    return stripThinking(raw).trim();
+    return { content: stripThinking(raw).trim(), toolCalls };
   }
 }
 
