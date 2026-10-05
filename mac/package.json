@@ -31,7 +31,7 @@
           ]
         }
       ],
-      "hardenedRuntime": true,
+      "hardenedRuntime": false,
       "identity": "-"
     },
     "directories": {
