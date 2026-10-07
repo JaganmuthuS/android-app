@@ -238,7 +238,7 @@ export class Db {
     this.run('INSERT INTO touches(lane_id, path, action, format, ts, detail) VALUES(?,?,?,?,?,?)', laneId, path, action, format, Date.now(), detail);
   }
   listTouches(): FileTouch[] {
-    return this.all(`SELECT t.*, l.title AS lane_title FROM touches t JOIN lanes l ON l.id = t.lane_id ORDER BY t.ts DESC LIMIT 500`).map((r) => ({
+    return this.all(`SELECT t.*, l.title AS lane_title FROM touches t JOIN lanes l ON l.id = t.lane_id ORDER BY t.ts DESC, t.rowid DESC LIMIT 500`).map((r) => ({
       laneId: String(r.lane_id), laneTitle: String(r.lane_title), path: String(r.path), action: r.action as TouchAction, format: String(r.format), ts: Number(r.ts), detail: String(r.detail ?? ''),
     }));
   }
@@ -246,7 +246,7 @@ export class Db {
     this.run('INSERT INTO audit(ts, lane_id, tool, path, result) VALUES(?,?,?,?,?)', Date.now(), laneId, tool, path, result.slice(0, 500));
   }
   listAudit(): AuditEntry[] {
-    return this.all('SELECT * FROM audit ORDER BY ts').map((r) => ({ ts: Number(r.ts), laneId: String(r.lane_id), tool: String(r.tool), path: String(r.path), result: String(r.result) }));
+    return this.all('SELECT * FROM audit ORDER BY ts, rowid').map((r) => ({ ts: Number(r.ts), laneId: String(r.lane_id), tool: String(r.tool), path: String(r.path), result: String(r.result) }));
   }
 
   deleteAll() {
