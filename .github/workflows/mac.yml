@@ -48,10 +48,10 @@ jobs:
             JARVIS-mac-apple-silicon.dmg
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: mac-v0.3.3
-          name: JARVIS for Mac 0.3.3 (Phase 3 + file access fixes)
+          tag_name: mac-v0.3.4
+          name: JARVIS for Mac 0.3.4 (Phase 3 + file access fixes)
           body: |
-            Phase 3 preview: choose a workspace folder and set access per folder. Jarvis reads text, Markdown, CSV and Word files, edits text and Markdown files as reviewable changes with inline diffs, saves a checkpoint before every step, and can restore any checkpoint. Files tab and CSV audit log included. 0.3.1: Jarvis can create folders; new top-level folders follow the main folder's access; choosing a workspace asks what access to give; a Set all control; folders made in Finder appear when you return to the app. 0.3.2: understands more of the ways local models name tools and paths, explains every blocked action in the Files tab, and shows the version in Settings. 0.3.3: asks macOS for folder permission properly and explains when macOS blocks it, adds Settings → Check file access with a copyable report, gives the model a map of readable files and reads files you name, and shows a banner when changes wait for you.
+            Phase 3 preview: choose a workspace folder and set access per folder. Jarvis reads text, Markdown, CSV and Word files, edits text and Markdown files as reviewable changes with inline diffs, saves a checkpoint before every step, and can restore any checkpoint. Files tab and CSV audit log included. 0.3.1: Jarvis can create folders; new top-level folders follow the main folder's access; choosing a workspace asks what access to give; a Set all control; folders made in Finder appear when you return to the app. 0.3.2: understands more of the ways local models name tools and paths, explains every blocked action in the Files tab, and shows the version in Settings. 0.3.3: asks macOS for folder permission properly and explains when macOS blocks it, adds Settings → Check file access with a copyable report, gives the model a map of readable files and reads files you name, and shows a banner when changes wait for you. 0.3.4: simple actions such as creating a folder run at once (you still accept the change) instead of becoming a plan, and only steps that send, publish, delete or export wait for approval.
             Download **JARVIS-mac-apple-silicon.dmg** (M1 or newer) or **JARVIS-mac.dmg** (any Mac), open it and drag JARVIS to Applications.
             The first time, macOS will block it because it is not notarised: open System Settings → Privacy & Security and click **Open Anyway**.
           files: |

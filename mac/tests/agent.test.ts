@@ -52,8 +52,10 @@ describe('triage parsing', () => {
     expect(parseTriage(JSON.stringify({ kind: 'plan', title: 'x', steps: [{ text: 'one', gated: false }] })).kind).toBe('answer');
   });
   it('recognises gate words', () => {
-    expect(needsGate('Delete old drafts', false)).toBe(true);
-    expect(needsGate('Summarise the memo', false)).toBe(false);
+    expect(needsGate('Delete old drafts')).toBe(true);
+    expect(needsGate('Summarise the memo')).toBe(false);
+    // The model's own flag is ignored: creating a folder is not a gated action.
+    expect(parseTriage(JSON.stringify({ kind: 'plan', title: 'x', steps: [{ text: 'Create the folder Notes', gated: true }, { text: 'Write notes.md', gated: true }] })).steps.map((st) => st.requiresGate)).toEqual([false, false]);
   });
 });
 

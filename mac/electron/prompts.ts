@@ -47,14 +47,20 @@ export const TRIAGE_SCHEMA = {
 
 export const TRIAGE_INSTRUCTION = [
   'Decide how to handle the latest user message.',
-  '- If it is a question or a short request you can answer in one reply, use kind "answer" and no steps.',
-  '- If it is a task with several parts (documents, folders, research, drafting), use kind "plan" with 3 to 8 short imperative steps, each one action.',
-  'Set "gated": true on any step that sends, emails, exports outside the working folder, deletes, publishes or overwrites originals.',
+  '- Use kind "answer" (no steps) for questions and for simple actions you can do at once with the file tools: creating a folder, creating or editing one file, reading or summarising files, renaming or moving a file. The user still reviews every change.',
+  '- Use kind "plan" only for bigger tasks with several distinct parts (e.g. read several sources, then draft, then update a document): 3 to 8 short imperative steps, each one action.',
+  '- Never write "check whether…" or "if…" steps. Just do the work; the tools report what exists.',
+  'Set "gated": true only on a step that sends or emails something, publishes or uploads it, deletes files, or exports outside the workspace.',
   'Reply with JSON only.',
 ].join('\n');
 
 const GATE_WORDS = /\b(send|sends|email|e-mail|mail|export|publish|post|upload|share|delete|remove|erase|overwrite|replace the original)\b/i;
-export const needsGate = (text: string, flagged: boolean) => flagged || GATE_WORDS.test(text);
+/**
+ * Jarvis decides which steps wait for approval from what the step says, not from the model's own flag:
+ * small models flag harmless steps (creating a folder) and the user ends up approving everything.
+ * Every file change is reviewed in the change list anyway; gates are for leaving the workspace or deleting.
+ */
+export const needsGate = (text: string) => GATE_WORDS.test(text);
 
 export interface Triage { kind: 'answer' | 'plan'; title: string; scope?: string; steps: { text: string; requiresGate: boolean }[] }
 
@@ -62,7 +68,7 @@ export function parseTriage(raw: string): Triage {
   let j: { kind?: string; title?: string; scope?: string; steps?: { text?: string; gated?: boolean }[] } = {};
   try { j = JSON.parse(raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)); } catch { /* fall through to answer */ }
   const steps = (j.steps ?? [])
-    .map((s) => ({ text: String(s.text ?? '').trim(), requiresGate: needsGate(String(s.text ?? ''), !!s.gated) }))
+    .map((s) => ({ text: String(s.text ?? '').trim(), requiresGate: needsGate(String(s.text ?? '')) }))
     .filter((s) => s.text)
     .slice(0, 8);
   const kind = j.kind === 'plan' && steps.length >= 2 ? 'plan' : 'answer';
