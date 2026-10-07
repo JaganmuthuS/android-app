@@ -2,7 +2,12 @@ import { _electron as electron, expect, test, type ElectronApplication, type Pag
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
+import * as http from 'http';
+import type { AddressInfo } from 'net';
 import { startFakeOllama, type FakeOllama } from './fake-ollama';
+import { makeDocx, makePdf, makeXlsx } from '../tests/fixtures';
 
 let ollama: FakeOllama;
 let userData: string;
@@ -10,8 +15,10 @@ let root: string;
 const ORIGINAL = '# Q3 Board Report\n\nNet revenue was €4.61M, slightly ahead of the June forecast.\n';
 
 async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
+  const packaged = process.env.E2E_APP_PATH;
   const app = await electron.launch({
-    args: ['.', `--user-data-dir=${userData}`, '--no-sandbox'],
+    ...(packaged ? { executablePath: packaged } : {}),
+    args: [...(packaged ? [] : ['.']), `--user-data-dir=${userData}`, '--no-sandbox'],
     env: { ...process.env, JARVIS_OLLAMA_URL: ollama.url, JARVIS_WORKSPACE: root },
   });
   const page = await app.firstWindow();
@@ -154,4 +161,63 @@ test('check file access and the waiting-changes banner', async () => {
   await expect(banner).toBeHidden();
   expect(fs.statSync(path.join(root, 'Board/2026')).isDirectory()).toBe(true);
   await app.close();
+});
+
+test('Office: Excel cells and a Word tracked change, reviewed then accepted', async () => {
+  fs.writeFileSync(path.join(root, 'Board/close.xlsx'), await makeXlsx());
+  fs.writeFileSync(path.join(root, 'Board/Q3.docx'), await makeDocx());
+  fs.writeFileSync(path.join(root, 'Board/memo.pdf'), await makePdf());
+  const { app, page } = await launch();
+  await page.getByLabel('Access for Board').selectOption('edit_ask');
+  await page.getByLabel('Message Jarvis').fill('Put the September revenue into the workbook and the board report');
+  await page.getByLabel('Message Jarvis').press('Enter');
+  await expect(page.locator('.pending-banner')).toContainText('2 changes waiting for you');
+  await expect(page.locator('.log').filter({ hasText: 'Board/memo.pdf · 5 lines' })).toBeVisible();
+  await expect(page.locator('.cells')).toContainText('Summary!B2');
+  await expect(page.locator('.cells .ins-cell')).toHaveText('4.82');
+  await page.locator('.change-title').filter({ hasText: 'slightly ahead of' }).click();
+  await expect(page.locator('.doc-hint')).toContainText('Saved as tracked changes');
+  await page.screenshot({ path: 'test-results/phase4-office.png' });
+  await page.locator('.rail').getByRole('button', { name: 'Accept all' }).click();
+  await expect(page.locator('.pending-banner')).toBeHidden();
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(fs.readFileSync(path.join(root, 'Board/close.xlsx')) as unknown as ArrayBuffer);
+  expect(wb.getWorksheet('Summary')!.getCell('B2').value).toBe(4.82);
+  const xml = await (await JSZip.loadAsync(fs.readFileSync(path.join(root, 'Board/Q3.docx')))).file('word/document.xml')!.async('string');
+  expect(xml).toContain('w:author="JARVIS"');
+  await app.close();
+});
+
+test('updates: finds a newer release on GitHub and downloads it', async () => {
+  const zip = Buffer.from('PK test');
+  const gh = http.createServer((req, res) => {
+    if (req.url?.startsWith('/repos/JaganmuthuS/android-app/releases?')) {
+      res.setHeader('content-type', 'application/json');
+      return res.end(JSON.stringify([{ tag_name: 'mac-v9.9.9', draft: false, prerelease: false, body: 'Everything is better.', html_url: 'x',
+        assets: [{ id: 7, name: 'JARVIS-mac.zip', size: zip.length }, { id: 8, name: 'JARVIS-mac-apple-silicon.zip', size: zip.length }] }]));
+    }
+    if (/\/releases\/assets\/[78]$/.test(req.url ?? '')) { res.setHeader('content-length', String(zip.length)); return res.end(zip); }
+    res.statusCode = 404; res.end();
+  });
+  await new Promise<void>((r) => gh.listen(0, '127.0.0.1', r));
+  process.env.JARVIS_UPDATE_API = `http://127.0.0.1:${(gh.address() as AddressInfo).port}`;
+  process.env.JARVIS_UPDATE_DRYRUN = '1';
+  try {
+    const { app, page } = await launch();
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await page.getByRole('button', { name: 'Check for updates' }).click();
+    await expect(page.getByText('Version 9.9.9 is available.', { exact: false })).toBeVisible();
+    await expect(page.locator('.update-notes')).toHaveText('Everything is better.');
+    await page.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(page.locator('.update-pill')).toHaveText('Update to 9.9.9');
+    await page.locator('.update-pill').click();
+    await page.getByRole('button', { name: 'Update now' }).click();
+    await expect(page.getByText('Installing. JARVIS will close and reopen', { exact: false })).toBeVisible();
+    await page.screenshot({ path: 'test-results/phase4-update.png' });
+    await app.close();
+  } finally {
+    delete process.env.JARVIS_UPDATE_API;
+    delete process.env.JARVIS_UPDATE_DRYRUN;
+    gh.close();
+  }
 });

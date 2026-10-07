@@ -2,7 +2,14 @@
 
 A desktop agent for documents, folders and research, built from `CLAUDE_CODE_PROMPT.md` and the `JARVIS Workspace` design.
 
-## Status: Phase 3 of 8
+## Status: Phase 4 of 8
+
+**New in Phase 4: Office files, PDFs and in-app updates**
+- **Word (.docx)**: Jarvis reads documents (headings marked) and edits them as real Word **tracked changes** by JARVIS, using the original run formatting. Only the edited paragraph's XML changes; styles and every other paragraph stay byte-for-byte the same. It can also add paragraphs (optionally as a heading) as tracked insertions.
+- **Excel (.xlsx)**: reads every sheet with cell addresses and formulas; changes cells while keeping number formats, fonts and other formulas. Workbooks with charts, pivot tables, slicers or macros are read-only, because saving them would lose those parts. The Document tab shows each changed cell, before and after.
+- **PowerPoint (.pptx)**: reads slides by shape and changes slide text, keeping run formatting.
+- **PDF**: reads text page by page (pdf.js). Scanned PDFs without a text layer are reported as such.
+- **Updates inside the app**: JARVIS checks GitHub at launch and every six hours. When a newer version exists, an **Update to x.y.z** button appears in the title bar; **Update now** downloads the right build for your Mac, checks it, closes JARVIS, swaps the app (putting the old one back if anything fails) and reopens it. While the repository is private, add a read-only GitHub token in Settings → Updates; it is stored encrypted in your Keychain.
 
 **New in Phase 3: files**
 - **Workspace**: click "Workspace" in the title bar to choose the folder Jarvis works in.
@@ -59,6 +66,8 @@ npm run dist       # build the .dmg into mac/release/
 - `electron/prompts.ts`: what the model is told, the plan's JSON format and the gate rules
 - `electron/ollama.ts`: the local model client (status, download, streaming chat)
 - `electron/workspace.ts`: folder access checks, the file tools, staged changes (apply, undo), checkpoints and restore
+- `electron/formats.ts`: Word, Excel, PowerPoint and PDF reading and editing
+- `electron/updater.ts`: finds, downloads and installs new releases from GitHub
 - `electron/db.ts`: SQLite storage using Node's built-in driver
 - `src/store.ts`: the renderer state, fed by events from the main process
 - `src/components/`: the title bar, sidebar, lane column (chat, plan, gates, composer), setup card, settings, workspace tabs and checkpoint bar

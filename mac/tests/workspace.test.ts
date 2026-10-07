@@ -1,3 +1,4 @@
+import JSZip from 'jszip';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -113,9 +114,9 @@ describe('changes', () => {
     expect(trashed.at(-1)).toBe(path.join(root, 'Board/Q3-Board.md'));
   });
 
-  it('only edits text files for now', async () => {
+  it('never overwrites an Office file with plain text', async () => {
     write('Board/deck.pptx', 'binary');
-    await expect(ws.exec('write_file', { path: 'Board/deck.pptx', content: 'x', reason: 'r' }, ctx())).rejects.toThrow(/arrives in the next update/);
+    await expect(ws.exec('write_file', { path: 'Board/deck.pptx', content: 'x', reason: 'r' }, ctx())).rejects.toThrow(/use replace_text/);
   });
 
   it('rates risk', () => {
@@ -318,5 +319,61 @@ describe('agent context', () => {
     expect(system).toContain('slightly ahead of forecast');
     expect(db.listMessages(laneId).some((m) => m.kind === 'log' && m.payload.verb === 'Read')).toBe(false); // attaching is quiet
     expect(db.listTouches().some((t) => t.path === 'Board/Q3-Board.md' && t.action === 'read')).toBe(true);
+  });
+});
+
+describe('Office files', () => {
+  const sha = (rel: string) => require('crypto').createHash('sha256').update(fs.readFileSync(path.join(root, rel))).digest('hex');
+
+  it('edits Word as tracked changes, only on accept, and restores byte-for-byte', async () => {
+    const { makeDocx } = await import('./fixtures');
+    fs.writeFileSync(path.join(root, 'Board/Q3.docx'), await makeDocx());
+    const original = sha('Board/Q3.docx');
+    const cp = db.addCheckpoint(laneId, 0, 'Before edits');
+    expect((await ws.exec('read_file', { path: 'Board/Q3.docx' }, ctx())).result).toContain('slightly ahead of');
+    await ws.exec('replace_text', { path: 'Board/Q3.docx', find: 'slightly ahead of', replace: '3.1% above', reason: 'Memory: exact figures' }, ctx());
+    await ws.exec('docx_insert_paragraph', { path: 'Board/Q3.docx', after: 'June forecast', content: 'Operating cost rose 4%.', reason: 'Sept-close C22' }, ctx());
+    expect(sha('Board/Q3.docx')).toBe(original); // nothing written yet
+    const [c] = db.listChanges(laneId);
+    expect(db.listChanges(laneId)).toHaveLength(1); // both edits are one reviewable change
+    expect(c.after).toContain('3.1% above the June forecast.');
+    expect(c.after).toContain('Operating cost rose 4%.');
+    await ws.decide(c.id, 'accept');
+    const xml = await (await JSZip.loadAsync(fs.readFileSync(path.join(root, 'Board/Q3.docx')))).file('word/document.xml')!.async('string');
+    expect(xml).toContain('w:author="JARVIS"');
+    expect(xml).toContain('<w:delText xml:space="preserve">slightly ahead of</w:delText>');
+    await ws.decide(c.id, 'undo');
+    expect(sha('Board/Q3.docx')).toBe(original);
+    await ws.decide(c.id, 'accept');
+    await ws.restore(cp.id);
+    expect(sha('Board/Q3.docx')).toBe(original);
+  });
+
+  it('changes Excel cells and records each cell for review', async () => {
+    const { makeXlsx } = await import('./fixtures');
+    fs.writeFileSync(path.join(root, 'Board/close.xlsx'), await makeXlsx());
+    await ws.exec('xlsx_write_cells', { path: 'Board/close.xlsx', sheet: 'Summary', cells: { B2: 4.82 }, reason: 'Sept close' }, ctx());
+    await ws.exec('xlsx_write_cells', { path: 'Board/close.xlsx', cells: '{"B2": 4.9, "C2": "=B2-4.61"}', reason: 'Correction' }, ctx());
+    const [c] = db.listChanges(laneId);
+    expect(JSON.parse(c.detail!)).toEqual([
+      { ref: 'Summary!B2', before: '4.61', after: '4.9' },
+      { ref: 'Summary!C2', before: '', after: '=B2-4.61' },
+    ]);
+    await ws.decide(c.id, 'accept');
+    expect((await ws.exec('read_file', { path: 'Board/close.xlsx' }, ctx())).result).toContain('B2=4.9');
+  });
+
+  it('reads PowerPoint and PDF, and refuses to edit PDFs or write over Office files', async () => {
+    const { makePptx, makePdf, makeDocx } = await import('./fixtures');
+    fs.writeFileSync(path.join(root, 'Board/deck.pptx'), await makePptx());
+    fs.writeFileSync(path.join(root, 'Finance/memo.pdf'), await makePdf());
+    fs.writeFileSync(path.join(root, 'Board/Q3.docx'), await makeDocx());
+    expect((await ws.exec('read_file', { path: 'Board/deck.pptx' }, ctx())).result).toContain('[Content 2] Revenue €4.61M');
+    expect((await ws.exec('read_file', { path: 'Finance/memo.pdf' }, ctx())).result).toContain('transparency duties only');
+    await ws.exec('replace_text', { path: 'Board/deck.pptx', find: '€4.61M', replace: '€4.82M', reason: 'r' }, ctx('autonomous'));
+    expect((await ws.exec('read_file', { path: 'Board/deck.pptx' }, ctx())).result).toContain('Revenue €4.82M');
+    await expect(ws.exec('write_file', { path: 'Board/Q3.docx', content: 'x', reason: 'r' }, ctx())).rejects.toThrow(/use replace_text or docx_insert_paragraph/);
+    db.setScope('Finance', 'edit_auto');
+    await expect(ws.exec('replace_text', { path: 'Finance/memo.pdf', find: 'a', replace: 'b', reason: 'r' }, ctx())).rejects.toThrow(/PDFs can be read but not edited/);
   });
 });

@@ -97,6 +97,22 @@ function ChangeView({ change: c }: { change: Change }) {
     body = <p className="doc-note">{c.status === 'pending' ? <>Accepting creates the folder <b>{c.filePath}/</b>.</> : c.status === 'rejected' ? 'Not created.' : <>Created the folder <b>{c.filePath}/</b>.</>}</p>;
   } else if (c.kind === 'move') {
     body = <p className="doc-note">{c.filePath} → <b>{c.moveTo}</b>{c.status === 'pending' ? '. Accepting moves the file; Undo moves it back.' : ''}</p>;
+  } else if (c.detail) {
+    const cells = JSON.parse(c.detail) as { ref: string; before: string; after: string }[];
+    body = (
+      <table className="table cells">
+        <thead><tr><th>Cell</th><th>Before</th><th>After</th></tr></thead>
+        <tbody>
+          {cells.map((e) => (
+            <tr key={e.ref}>
+              <td className="nums">{e.ref}</td>
+              <td className={c.status === 'pending' ? 'del-cell' : undefined}>{e.before || <span className="muted">(empty)</span>}</td>
+              <td className={c.status === 'pending' ? 'ins-cell' : undefined}>{e.after}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
   } else {
     const before = c.before ?? '';
     const after = c.after ?? '';
@@ -114,6 +130,10 @@ function ChangeView({ change: c }: { change: Change }) {
         {ext && <span className="tag tag-neutral">{ext}</span>}
         <span className={`tag ${c.status === 'pending' ? 'tag-accent' : 'tag-neutral'}`}>{c.kind === 'create' ? 'New file' : c.kind === 'mkdir' ? 'New folder' : STATUS_LABEL[c.status]}</span>
       </div>
+      {c.afterBlob && c.filePath.toLowerCase().endsWith('.docx') && (
+        <p className="doc-hint">Saved as tracked changes. After you accept, Word shows them under Review, where you can still accept or reject each one.</p>
+      )}
+      {c.afterBlob && /\.xls[xm]$/i.test(c.filePath) && <p className="doc-hint">Formatting and other formulas in the workbook are kept.</p>}
       <article className="page">{body}</article>
     </>
   );

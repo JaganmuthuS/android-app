@@ -19,7 +19,7 @@ export function systemPrompt(memories: Memory[], now = new Date(), workspace = '
     'Ask instead of guessing when a request is ambiguous.',
     'You can list, read and search files, create folders, and create or edit text and Markdown files, using the tools. To make a folder, use create_folder; never write an empty file in its place. Read a file before you describe or change it. Never invent file contents.',
     'Your edits are never applied directly: each one is staged as a change the user reviews, unless their autonomy setting applies it. Keep the existing structure and wording of files; change only what the task needs.',
-    'You cannot read Excel, PowerPoint or PDF files or edit Word files yet, and you cannot browse the web yet. Say so when a task needs them.',
+    'You can read Word, Excel, PowerPoint and PDF files. You can edit Word text (as tracked changes the user can see in Word), add Word paragraphs, change Excel cells (formatting and other formulas are kept), and change PowerPoint slide text. You cannot edit PDFs or create new Office files; write Markdown instead. You cannot browse the web yet.',
     workspace,
     `Today is ${now.toDateString()}.`,
     active.length ? `The user asked you to remember:\n${active.map((m) => `- ${m.text}`).join('\n')}` : '',
@@ -87,11 +87,20 @@ const tool = (name: string, description: string, properties: Record<string, { ty
 
 export const TOOLS: ToolSpec[] = [
   tool('list_dir', 'List the files and folders in a workspace folder. Use "." for the top level, which also shows each folder\'s access.', { path: { type: 'string', description: 'Folder path relative to the workspace' } }, ['path']),
-  tool('read_file', 'Read a text, Markdown, CSV, JSON or Word (.docx) file.', { path: { type: 'string', description: 'File path relative to the workspace' } }, ['path']),
+  tool('read_file', 'Read a file: text, Markdown, CSV, JSON, Word (.docx), Excel (.xlsx, shows cell addresses like B2=4.82), PowerPoint (.pptx, by slide) or PDF.', { path: { type: 'string', description: 'File path relative to the workspace' } }, ['path']),
   tool('search_files', 'Find files whose name or text contains a word or phrase.', { query: { type: 'string', description: 'Word or phrase to find' }, path: { type: 'string', description: 'Folder to search, "." for everything readable' } }, ['query']),
-  tool('replace_text', 'Change part of a text or Markdown file. "find" must be copied exactly from the file and appear once. Preferred over write_file for edits.', {
-    path: { type: 'string', description: 'File path' }, find: { type: 'string', description: 'Exact existing text' }, replace: { type: 'string', description: 'New text' }, reason: { type: 'string', description: 'Why, citing the source of any figure' },
+  tool('replace_text', 'Change part of a text, Markdown, Word (.docx, saved as a tracked change) or PowerPoint (.pptx) file. "find" must be copied exactly from the file and appear once. Preferred over write_file for edits.', {
+    path: { type: 'string', description: 'File path' }, find: { type: 'string', description: 'Exact existing text' }, replace: { type: 'string', description: 'New text' },
+    slide: { type: 'number', description: 'PowerPoint only: slide number, if the text is on several slides' }, reason: { type: 'string', description: 'Why, citing the source of any figure' },
   }, ['path', 'find', 'replace', 'reason']),
+  tool('docx_insert_paragraph', 'Add a new paragraph to a Word file after the paragraph containing "after" (a few exact words), as a tracked change. Use style "Heading1"/"Heading2" for headings.', {
+    path: { type: 'string', description: 'Word file path' }, after: { type: 'string', description: 'Exact words from the paragraph to insert after; empty for the end' },
+    content: { type: 'string', description: 'Text of the new paragraph' }, style: { type: 'string', description: 'Optional Word style, e.g. Heading2' }, reason: { type: 'string', description: 'Why' },
+  }, ['path', 'content', 'reason']),
+  tool('xlsx_write_cells', 'Set cells in an Excel (.xlsx) sheet. Values starting with "=" become formulas. Formatting and other formulas are kept.', {
+    path: { type: 'string', description: 'Excel file path' }, sheet: { type: 'string', description: 'Sheet name; empty for the first sheet' },
+    cells: { type: 'object', description: 'Cell address to value, e.g. {"B2": 4.82, "C2": "=B2*1.1"}' }, reason: { type: 'string', description: 'Why, citing the source of each figure' },
+  }, ['path', 'cells', 'reason']),
   tool('write_file', 'Create a new text or Markdown file, or replace a whole small file.', {
     path: { type: 'string', description: 'File path, e.g. Notes/summary.md' }, content: { type: 'string', description: 'Full file content' }, reason: { type: 'string', description: 'Why' },
   }, ['path', 'content', 'reason']),

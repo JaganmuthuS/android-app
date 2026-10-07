@@ -14,6 +14,7 @@ export function TitleBar() {
   const lane = useStore(currentLane);
   const fallback = useStore((s) => s.settings?.autonomy ?? 'ask_every_change');
   const workspace = useStore((s) => s.settings?.workspace ?? null);
+  const update = useStore((s) => s.update);
   const { setAutonomy, openSettings, chooseWorkspace } = useStore.getState();
   const autonomy = lane?.autonomy ?? fallback;
   const active = lanes.filter((l) => isBusy(l)).length;
@@ -45,6 +46,11 @@ export function TitleBar() {
             </button>
           ))}
         </div>
+        {(update.state === 'available' || update.state === 'downloading' || update.state === 'installing') && update.info && (
+          <button type="button" className="btn btn-primary update-pill" onClick={() => openSettings(true)}>
+            {update.state === 'available' ? `Update to ${update.info.version}` : update.state === 'downloading' ? `Downloading ${Math.round((update.progress ?? 0) * 100)}%` : 'Installing…'}
+          </button>
+        )}
         <button type="button" className="btn btn-secondary btn-icon" aria-label="Settings" title="Settings" onClick={() => openSettings(true)}>
           <SettingsIcon size={18} />
         </button>

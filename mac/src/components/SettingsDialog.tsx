@@ -60,6 +60,8 @@ export function SettingsDialog() {
       <div className="dialog settings" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <div className="dialog-title settings-title" id="settings-title">Settings <span className="version">JARVIS {window.jarvis?.version}</span></div>
 
+        <UpdatesSection />
+
         <section className="settings-section" aria-labelledby="check-title">
           <h6 id="check-title">Check file access</h6>
           <p className="field-hint" style={{ marginTop: 0 }}>Tests each folder directly (no AI), then checks that the model can use file tools. Takes up to a minute.</p>
@@ -123,7 +125,7 @@ export function SettingsDialog() {
                 <button key={o.value} type="button" role="radio" aria-checked={settings.autonomy === o.value} className="seg-opt" onClick={() => void st.saveSettings({ autonomy: o.value })}>{o.label}</button>
               ))}
             </div>
-            <p className="field-hint">Every level asks before steps that send, export, delete or overwrite. Change review arrives with file editing.</p>
+            <p className="field-hint">Every level asks before steps that send, publish, delete or export. Ask every change: every edit waits for your Accept. Ask if risky: small, safe edits apply at once. Autonomous: edits apply at once except in folders set to Edit · ask.</p>
           </div>
           <div className="field">
             <label htmlFor="set-parallel">Lanes that can work at the same time</label>
@@ -173,5 +175,56 @@ export function SettingsDialog() {
         </div>
       </div>
     </div>
+  );
+}
+
+function UpdatesSection() {
+  const update = useStore((s) => s.update);
+  const st = useStore.getState();
+  const [token, setToken] = useState('');
+  const [showToken, setShowToken] = useState(false);
+  const busy = update.state === 'checking' || update.state === 'downloading' || update.state === 'installing';
+  const pct = Math.round((update.progress ?? 0) * 100);
+
+  let status: React.ReactNode;
+  switch (update.state) {
+    case 'checking': status = 'Checking GitHub for a newer version…'; break;
+    case 'none': status = `You have the latest version (${window.jarvis?.version}).`; break;
+    case 'available': status = <>Version <b>{update.info?.version}</b> is available. Updating takes about a minute; JARVIS closes and reopens by itself.</>; break;
+    case 'downloading': status = `Downloading version ${update.info?.version}… ${pct}%`; break;
+    case 'installing': status = 'Installing. JARVIS will close and reopen in a moment.'; break;
+    case 'error': status = <span className="setup-error">{update.error}</span>; break;
+    default: status = `You have version ${window.jarvis?.version}.`;
+  }
+
+  return (
+    <section className="settings-section" aria-labelledby="updates-title">
+      <h6 id="updates-title">Updates</h6>
+      <p className="settings-status" role="status">{status}</p>
+      {update.state === 'downloading' && <span className="progress"><span style={{ width: `${pct}%`, background: 'var(--color-accent)' }} /></span>}
+      {update.state === 'available' && update.info?.notes && <p className="field-hint update-notes">{update.info.notes.slice(0, 600)}</p>}
+      <div className="row">
+        {update.state === 'available'
+          ? <button type="button" className="btn btn-primary" onClick={() => void st.installUpdate()}>Update now</button>
+          : <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => void st.checkForUpdate()}>{update.state === 'checking' ? 'Checking…' : 'Check for updates'}</button>}
+        {update.packaged === false && <span className="field-hint" style={{ margin: 0 }}>Installing works in the JARVIS app from Applications.</span>}
+      </div>
+      {(update.needsToken || update.hasToken || showToken) ? (
+        <div className="field">
+          <label htmlFor="gh-token">GitHub token {update.hasToken && <span className="muted">(saved in your Keychain)</span>}</label>
+          <form className="row" onSubmit={(e) => { e.preventDefault(); void st.setGithubToken(token).then((ok) => { if (ok) setToken(''); }); }}>
+            <input id="gh-token" className="input" type="password" autoComplete="off" placeholder={update.hasToken ? 'Paste a new token to replace it' : 'github_pat_…'} value={token} onChange={(e) => setToken(e.target.value)} />
+            <button type="submit" className="btn btn-secondary" disabled={!token.trim()}>Save</button>
+            {update.hasToken && <button type="button" className="btn btn-ghost" onClick={() => void st.setGithubToken('')}>Remove</button>}
+          </form>
+          <p className="field-hint">
+            Only needed while the repository is private. Create a fine-grained token with read-only access to “Contents” of JaganmuthuS/android-app:{' '}
+            <button type="button" className="link-btn" onClick={() => void window.jarvis?.openExternal('https://github.com/settings/personal-access-tokens/new')}>create a token on GitHub</button>.
+          </p>
+        </div>
+      ) : (
+        <button type="button" className="link-btn" style={{ alignSelf: 'flex-start', fontSize: 12 }} onClick={() => setShowToken(true)}>Use a GitHub token</button>
+      )}
+    </section>
   );
 }

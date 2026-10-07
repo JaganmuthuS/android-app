@@ -8,8 +8,10 @@ let ollama: FakeOllama;
 let userData: string;
 
 async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
+  const packaged = process.env.E2E_APP_PATH;
   const app = await electron.launch({
-    args: ['.', `--user-data-dir=${userData}`, '--no-sandbox'],
+    ...(packaged ? { executablePath: packaged } : {}),
+    args: [...(packaged ? [] : ['.']), `--user-data-dir=${userData}`, '--no-sandbox'],
     env: { ...process.env, JARVIS_OLLAMA_URL: ollama.url },
   });
   const page = await app.firstWindow();

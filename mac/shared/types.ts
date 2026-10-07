@@ -77,12 +77,25 @@ export interface Change {
   status: ChangeStatus;
   risk: 'low' | 'high';
   ts: number;
+  beforeBlob?: string;       // saved copies for Word, Excel and PowerPoint edits
+  afterBlob?: string;
+  detail?: string;           // JSON: Excel cell edits [{ref, before, after}]
 }
 
 export interface Checkpoint { id: string; laneId: string; stepIndex: number; label: string; ts: number }
 
 export type TouchAction = 'read' | 'edited' | 'created' | 'moved' | 'deleted' | 'held' | 'denied';
 export interface FileTouch { laneId: string; laneTitle: string; path: string; action: TouchAction; format: string; ts: number; detail?: string }
+
+export interface UpdateInfo { version: string; tag: string; notes: string; url: string; assetId: number; assetName: string; size: number }
+export interface UpdateState {
+  state: 'idle' | 'checking' | 'none' | 'available' | 'downloading' | 'installing' | 'error';
+  info?: UpdateInfo;
+  progress?: number;
+  error?: string;
+  needsToken?: boolean;
+  checkedAt?: number;
+}
 
 export interface DiagnosticLine { ok: boolean; label: string; detail?: string }
 
@@ -120,7 +133,8 @@ export type JarvisEvent =
   | { type: 'scopes'; scopes: FileScope[] }
   | { type: 'changes'; laneId: string; changes: Change[] }
   | { type: 'checkpoints'; laneId: string; checkpoints: Checkpoint[] }
-  | { type: 'touches'; touches: FileTouch[] };
+  | { type: 'touches'; touches: FileTouch[] }
+  | { type: 'update'; update: UpdateState };
 
 export interface JarvisApi {
   platform: string;
@@ -162,6 +176,10 @@ export interface JarvisApi {
   exportAudit(): Promise<string | null>;
   diagnose(): Promise<{ version: string; lines: DiagnosticLine[] }>;
   openPrivacySettings(): Promise<void>;
+  checkForUpdate(): Promise<UpdateState>;
+  installUpdate(): Promise<void>;
+  updateStatus(): Promise<UpdateState & { hasToken: boolean; packaged: boolean }>;
+  setGithubToken(token: string): Promise<void>;
   openExternal(url: string): Promise<void>;
   onEvent(listener: (e: JarvisEvent) => void): () => void;
 }

@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS scopes (path TEXT PRIMARY KEY, mode TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS changes (
   id TEXT PRIMARY KEY, lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE, step_index INTEGER,
   file_path TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, reason TEXT NOT NULL,
-  before TEXT, after TEXT, move_to TEXT, status TEXT NOT NULL, risk TEXT NOT NULL, ts INTEGER NOT NULL
+  before TEXT, after TEXT, move_to TEXT, status TEXT NOT NULL, risk TEXT NOT NULL, ts INTEGER NOT NULL,
+  before_blob TEXT, after_blob TEXT, detail TEXT
 );
 CREATE INDEX IF NOT EXISTS changes_lane ON changes(lane_id, ts);
 CREATE TABLE IF NOT EXISTS checkpoints (
@@ -59,6 +60,9 @@ export class Db {
     // 0.3.1 databases have no touches.detail column yet.
     const cols = this.db.prepare('PRAGMA table_info(touches)').all() as { name: string }[];
     if (!cols.some((c) => c.name === 'detail')) this.db.exec("ALTER TABLE touches ADD COLUMN detail TEXT NOT NULL DEFAULT ''");
+    // 0.3.x databases: changes to binary files need the saved copies and cell details.
+    const ccols = (this.db.prepare('PRAGMA table_info(changes)').all() as { name: string }[]).map((c) => c.name);
+    for (const col of ['before_blob', 'after_blob', 'detail']) if (!ccols.includes(col)) this.db.exec(`ALTER TABLE changes ADD COLUMN ${col} TEXT`);
   }
 
   close() { this.db.close(); }
@@ -180,6 +184,8 @@ export class Db {
       kind: r.kind as Change['kind'], title: String(r.title), reason: String(r.reason),
       before: r.before == null ? null : String(r.before), after: r.after == null ? null : String(r.after),
       moveTo: r.move_to == null ? undefined : String(r.move_to), status: r.status as ChangeStatus, risk: r.risk as Change['risk'], ts: Number(r.ts),
+      beforeBlob: r.before_blob == null ? undefined : String(r.before_blob), afterBlob: r.after_blob == null ? undefined : String(r.after_blob),
+      detail: r.detail == null ? undefined : String(r.detail),
     };
   }
   listChanges(laneId: string): Change[] { return this.all('SELECT * FROM changes WHERE lane_id = ? ORDER BY ts, rowid', laneId).map((r) => this.toChange(r)); }
@@ -191,12 +197,13 @@ export class Db {
   addChange(c: Omit<Change, 'id' | 'ts'>): Change {
     const id = randomUUID();
     const ts = Date.now();
-    this.run('INSERT INTO changes(id, lane_id, step_index, file_path, kind, title, reason, before, after, move_to, status, risk, ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
-      id, c.laneId, c.stepIndex, c.filePath, c.kind, c.title, c.reason, c.before, c.after, c.moveTo ?? null, c.status, c.risk, ts);
+    this.run('INSERT INTO changes(id, lane_id, step_index, file_path, kind, title, reason, before, after, move_to, status, risk, ts, before_blob, after_blob, detail) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      id, c.laneId, c.stepIndex, c.filePath, c.kind, c.title, c.reason, c.before, c.after, c.moveTo ?? null, c.status, c.risk, ts,
+      c.beforeBlob ?? null, c.afterBlob ?? null, c.detail ?? null);
     return this.getChange(id)!;
   }
-  updateChange(id: string, patch: Partial<Pick<Change, 'title' | 'reason' | 'after' | 'status' | 'risk' | 'kind'>>) {
-    const cols: Record<string, string> = { title: 'title', reason: 'reason', after: 'after', status: 'status', risk: 'risk', kind: 'kind' };
+  updateChange(id: string, patch: Partial<Pick<Change, 'title' | 'reason' | 'after' | 'status' | 'risk' | 'kind' | 'afterBlob' | 'detail'>>) {
+    const cols: Record<string, string> = { title: 'title', reason: 'reason', after: 'after', status: 'status', risk: 'risk', kind: 'kind', afterBlob: 'after_blob', detail: 'detail' };
     for (const [k, v] of Object.entries(patch)) {
       if (v === undefined || !cols[k]) continue;
       this.run(`UPDATE changes SET ${cols[k]} = ? WHERE id = ?`, v as string | null, id);

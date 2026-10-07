@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { api } from './api';
 import type {
-  Autonomy, Change, Checkpoint, EngineStatus, FileScope, FileTouch, JarvisEvent, Lane, Memory, Message, PlanStep, PullProgress, ScopeMode, Settings, UiState,
+  Autonomy, Change, Checkpoint, EngineStatus, UpdateState, FileScope, FileTouch, JarvisEvent, Lane, Memory, Message, PlanStep, PullProgress, ScopeMode, Settings, UiState,
 } from '../shared/types';
 
 type Tab = UiState['tab'];
@@ -28,6 +28,7 @@ interface State {
   focusedChange: string | null;
   cpSel: string | null;
   checkOnOpen: boolean;
+  update: UpdateState & { hasToken?: boolean; packaged?: boolean };
 }
 
 interface Actions {
@@ -65,6 +66,9 @@ interface Actions {
   restore(): Promise<void>;
   exportAudit(): Promise<void>;
   notice(msg: string): void;
+  checkForUpdate(): Promise<void>;
+  installUpdate(): Promise<void>;
+  setGithubToken(token: string): Promise<boolean>;
 }
 
 export type Store = State & Actions;
@@ -107,6 +111,7 @@ export const useStore = create<Store>((set, get) => {
       case 'changes': set((s) => ({ changes: { ...s.changes, [e.laneId]: e.changes } })); break;
       case 'checkpoints': set((s) => ({ checkpoints: { ...s.checkpoints, [e.laneId]: e.checkpoints } })); break;
       case 'touches': set({ touches: e.touches }); break;
+      case 'update': set((s) => ({ update: { ...s.update, ...e.update, info: e.update.info ?? (e.update.state === 'none' ? undefined : s.update.info), error: e.update.error } })); break;
     }
   };
 
@@ -132,6 +137,7 @@ export const useStore = create<Store>((set, get) => {
     ready: false, lanes: [], laneId: null, tab: 'doc', messages: {}, steps: {}, streams: {}, drafts: {},
     memories: [], settings: null, engine: null, pull: null, settingsOpen: false, toast: null,
     scopes: [], changes: {}, checkpoints: {}, touches: [], focusedChange: null, cpSel: null, checkOnOpen: false,
+    update: { state: 'idle' },
 
     async init() {
       if (!api) return;
@@ -142,6 +148,8 @@ export const useStore = create<Store>((set, get) => {
       set({ lanes, settings, memories, scopes, touches, tab: ui.tab, laneId: ui.laneId });
       await ensureLane();
       set({ ready: true });
+      const u = await api.updateStatus().catch(() => null);
+      if (u) set({ update: u });
       // Folders made in Finder show up as soon as you come back to Jarvis.
       window.addEventListener('focus', () => { void get().refreshScopes(); });
       await get().refreshEngine();
@@ -229,6 +237,12 @@ export const useStore = create<Store>((set, get) => {
     async exportAudit() {
       const file = await guard(() => api!.exportAudit());
       if (file) get().notice(`Audit log saved to ${file}`);
+    },
+    async checkForUpdate() { await guard(() => api!.checkForUpdate()); },
+    async installUpdate() { await guard(() => api!.installUpdate()); },
+    async setGithubToken(token) {
+      try { await api!.setGithubToken(token); set((s) => ({ update: { ...s.update, hasToken: !!token.trim() } })); return true; }
+      catch (e) { get().showError(e); return false; }
     },
     notice(msg) {
       set({ toast: msg });

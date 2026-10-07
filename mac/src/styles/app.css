@@ -246,3 +246,10 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; background:
 .pending-banner { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 10px; background: var(--color-accent-100); border-left: 2px solid var(--color-accent); font-size: 12px; color: var(--color-accent-900); }
 .row-actions { display: flex; gap: 6px; flex: none; }
 .check-link { font-size: 12px; align-self: flex-start; margin-top: 4px; }
+
+.cells td.del-cell { color: var(--color-neutral-600); text-decoration: line-through; }
+.cells td.ins-cell { background: var(--color-accent-100); color: var(--color-accent-800); font-weight: 600; }
+.doc-hint { font-size: 12px; color: var(--color-neutral-700); margin: -8px 0 12px; max-width: 620px; }
+
+.update-pill { font-size: 13px; padding: 7px 12px; white-space: nowrap; }
+.update-notes { white-space: pre-wrap; max-height: 120px; overflow: auto; }

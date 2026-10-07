@@ -1,4 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain, Notification, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, screen, shell } from 'electron';
+import { execFile, spawn } from 'child_process';
+import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Agent } from './agent';
@@ -6,7 +8,8 @@ import { NEW_LANE_TITLE } from './agent';
 import { Db } from './db';
 import { Ollama } from './ollama';
 import { Workspace } from './workspace';
-import type { JarvisEvent, ScopeMode, Settings, UiState } from '../shared/types';
+import { SWAP_SCRIPT, Updater, bundleVersion } from './updater';
+import type { JarvisEvent, ScopeMode, Settings, UiState, UpdateState } from '../shared/types';
 
 const DEFAULT_BOUNDS = { width: 1440, height: 900 };
 const MIN_SIZE = { width: 1180, height: 720 };
@@ -19,6 +22,64 @@ let db: Db;
 let agent: Agent;
 let ollama: Ollama;
 let workspace: Workspace;
+let updater: Updater;
+let update: UpdateState = { state: 'idle' };
+const setUpdate = (u: UpdateState) => { update = u; emit({ type: 'update', update }); };
+
+/* ---------- GitHub token for private repositories, kept encrypted by the macOS Keychain ---------- */
+function githubToken(): string | null {
+  const stored = db.getKv<string | null>('githubToken', null);
+  if (!stored) return null;
+  try { return safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(stored, 'base64')) : null; } catch { return null; }
+}
+function saveGithubToken(token: string) {
+  const t = token.trim();
+  if (!t) { db.setKv('githubToken', null); return; }
+  if (!/^[\w-]{20,255}$/.test(t)) throw new Error('That does not look like a GitHub token.');
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('This Mac cannot store the token securely.');
+  db.setKv('githubToken', safeStorage.encryptString(t).toString('base64'));
+}
+
+async function checkForUpdate(): Promise<UpdateState> {
+  if (update.state === 'downloading' || update.state === 'installing') return update;
+  setUpdate({ ...update, state: 'checking' });
+  const res = await updater.check();
+  setUpdate(res);
+  return res;
+}
+
+/** Download, unpack, verify, then quit and let a small script swap the app and reopen it. */
+async function installUpdate() {
+  if (update.state !== 'available' || !update.info) throw new Error('There is no update to install.');
+  const info = update.info;
+  if (!process.env.JARVIS_UPDATE_DRYRUN && (process.platform !== 'darwin' || !app.isPackaged)) {
+    throw new Error('Updates install only in the JARVIS app itself.');
+  }
+  const bundle = path.resolve(app.getPath('exe'), '..', '..', '..');
+  try {
+    setUpdate({ state: 'downloading', info, progress: 0 });
+    const zip = await updater.download(info, (progress) => setUpdate({ state: 'downloading', info, progress }));
+    setUpdate({ state: 'installing', info, progress: 1 });
+    if (process.env.JARVIS_UPDATE_DRYRUN) return; // tests stop before touching the app
+    if (!bundle.endsWith('.app')) throw new Error('JARVIS is not running from an app bundle.');
+    try { fs.accessSync(path.dirname(bundle), fs.constants.W_OK); } catch {
+      throw new Error(`JARVIS can't replace itself in ${path.dirname(bundle)}. Move JARVIS into Applications and try again.`);
+    }
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'jarvis-update-'));
+    await new Promise<void>((resolve, reject) => execFile('/usr/bin/ditto', ['-x', '-k', zip, tmp], (err) => (err ? reject(new Error('The update could not be unpacked.')) : resolve())));
+    const fresh = path.join(tmp, 'JARVIS.app');
+    const v = bundleVersion(fresh);
+    if (v !== info.version) throw new Error(`The download contained version ${v ?? 'unknown'} instead of ${info.version}.`);
+    const script = path.join(tmp, 'swap.sh');
+    fs.writeFileSync(script, SWAP_SCRIPT, { mode: 0o755 });
+    spawn('/bin/bash', [script, bundle, fresh, String(process.pid), tmp], { detached: true, stdio: 'ignore' }).unref();
+    fs.rmSync(zip, { force: true });
+    app.quit();
+  } catch (e) {
+    setUpdate({ state: 'error', info, error: (e as Error).message });
+    throw e;
+  }
+}
 
 const emit = (e: JarvisEvent) => { if (win && !win.isDestroyed()) win.webContents.send('jarvis:event', e); };
 
@@ -244,6 +305,10 @@ function registerIpc() {
     }
     return { version: app.getVersion(), lines };
   });
+  handle('update:check', () => checkForUpdate());
+  handle('update:install', () => installUpdate());
+  handle('update:status', () => ({ ...update, hasToken: !!githubToken(), packaged: app.isPackaged }));
+  handle('update:token', async (t: string) => { saveGithubToken(str(t, 300)); await checkForUpdate(); });
   handle('open:privacy', () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders'));
   handle('audit:export', async () => {
     const res = await dialog.showSaveDialog(win!, { title: 'Export the audit log', defaultPath: `jarvis-audit-${new Date().toISOString().slice(0, 10)}.csv` });
@@ -281,6 +346,16 @@ app.whenReady().then(() => {
   });
   if (process.env.JARVIS_WORKSPACE && !db.getSettings().workspace) workspace.setRoot(process.env.JARVIS_WORKSPACE);
   agent = new Agent(db, ollama, emit, notify, workspace);
+  updater = new Updater({
+    current: app.getVersion(),
+    arch: process.arch,
+    token: githubToken,
+    downloadDir: path.join(app.getPath('userData'), 'updates'),
+    apiBase: process.env.JARVIS_UPDATE_API,
+  });
+  // Look for updates shortly after launch and every six hours.
+  setTimeout(() => { void checkForUpdate(); }, 8_000);
+  setInterval(() => { void checkForUpdate(); }, 6 * 60 * 60 * 1000);
   agent.recover();
   registerIpc();
   createWindow();

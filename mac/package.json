@@ -1,7 +1,7 @@
 {
   "name": "jarvis-workspace",
   "productName": "JARVIS",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "description": "JARVIS: a macOS desktop agent for documents, folders and research.",
   "private": true,
   "main": "dist-electron/electron/main.js",
@@ -29,6 +29,12 @@
           "arch": [
             "universal"
           ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
         }
       ],
       "hardenedRuntime": false,
@@ -48,8 +54,10 @@
   "dependencies": {
     "@fontsource/archivo": "^5.3.0",
     "diff": "^9.0.0",
+    "exceljs": "^4.4.0",
     "jszip": "^3.10.2",
     "lucide-react": "^1.52.0",
+    "pdfjs-dist": "^6.4.299",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^5.0.15"
@@ -64,6 +72,7 @@
     "cross-env": "^10.1.0",
     "electron": "^44.5.1",
     "electron-builder": "^26.15.3",
+    "pdf-lib": "^1.17.1",
     "typescript": "^7.0.2",
     "vite": "^8.3.2",
     "vitest": "^5.0.3",

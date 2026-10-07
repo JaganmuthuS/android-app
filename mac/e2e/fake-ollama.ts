@@ -64,6 +64,14 @@ export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: nu
       const say = (text: string) => stream([...(text.match(/\S+\s*/g) ?? [text]).map((w) => ({ message: { role: 'assistant', content: w }, done: false })), { done: true }]);
 
       if (tools && /Use the list_dir tool/.test(last.content)) return call('list_dir', { path: '.' });
+      if (/workbook/i.test(request)) {
+        if (format) return say(JSON.stringify({ kind: 'answer', title: 'Office update' }));
+        const done = messages.filter((m) => m.role === 'tool').length;
+        if (done === 0) return call('xlsx_write_cells', { path: 'Board/close.xlsx', sheet: 'Summary', cells: { B2: 4.82 }, reason: 'September close' });
+        if (done === 1) return call('replace_text', { path: 'Board/Q3.docx', find: 'slightly ahead of', replace: '3.1% above', reason: 'Exact figures' });
+        if (done === 2) return call('read_file', { path: 'Board/memo.pdf' });
+        return say('Both files are updated and waiting for your review.');
+      }
       if (format) {
         if (/diary/i.test(request)) return say(JSON.stringify({ kind: 'answer', title: 'Diary question' }));
         if (/folder/i.test(request)) return say(JSON.stringify({ kind: 'answer', title: 'New folders' }));
