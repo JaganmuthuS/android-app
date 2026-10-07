@@ -31,6 +31,15 @@ export class Ollama {
     }
   }
 
+  /** What the model can do, e.g. ["completion", "tools"]. Empty when Ollama is too old to say. */
+  async capabilities(model: string): Promise<string[]> {
+    try {
+      const r = await fetch(this.url('/api/show'), { method: 'POST', body: JSON.stringify({ model }), signal: AbortSignal.timeout(5000) });
+      const j = (await r.json()) as { capabilities?: string[] };
+      return j.capabilities ?? [];
+    } catch { return []; }
+  }
+
   /** Download a model, reporting progress as it goes. */
   async pull(model: string, onProgress: (p: PullProgress) => void): Promise<void> {
     const res = await fetch(this.url('/api/pull'), { method: 'POST', body: JSON.stringify({ model, stream: true }) });

@@ -84,6 +84,8 @@ export interface Checkpoint { id: string; laneId: string; stepIndex: number; lab
 export type TouchAction = 'read' | 'edited' | 'created' | 'moved' | 'deleted' | 'held' | 'denied';
 export interface FileTouch { laneId: string; laneTitle: string; path: string; action: TouchAction; format: string; ts: number; detail?: string }
 
+export interface DiagnosticLine { ok: boolean; label: string; detail?: string }
+
 export interface AuditEntry { ts: number; laneId: string; tool: string; path: string; result: string }
 
 export interface EngineStatus {
@@ -158,6 +160,8 @@ export interface JarvisApi {
   restoreCheckpoint(checkpointId: string): Promise<void>;
   listTouches(): Promise<FileTouch[]>;
   exportAudit(): Promise<string | null>;
+  diagnose(): Promise<{ version: string; lines: DiagnosticLine[] }>;
+  openPrivacySettings(): Promise<void>;
   openExternal(url: string): Promise<void>;
   onEvent(listener: (e: JarvisEvent) => void): () => void;
 }

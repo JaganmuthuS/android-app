@@ -40,6 +40,7 @@ export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: nu
     };
 
     if (req.url === '/api/version') return json({ version: '0.12.0-test' });
+    if (req.url === '/api/show') return json({ capabilities: ['completion', 'tools'] });
     if (req.url === '/api/tags') return json({ models: state.installed.map((name) => ({ name, size: 5.2e9, details: { parameter_size: '8.2B' } })) });
     if (req.url === '/api/pull') {
       const { model } = JSON.parse(body);
@@ -62,6 +63,7 @@ export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: nu
       const call = (name: string, args: object) => stream([{ message: { role: 'assistant', content: '', tool_calls: [{ function: { name, arguments: args } }] }, done: false }, { done: true }]);
       const say = (text: string) => stream([...(text.match(/\S+\s*/g) ?? [text]).map((w) => ({ message: { role: 'assistant', content: w }, done: false })), { done: true }]);
 
+      if (tools && /Use the list_dir tool/.test(last.content)) return call('list_dir', { path: '.' });
       if (format) {
         if (/diary/i.test(request)) return say(JSON.stringify({ kind: 'answer', title: 'Diary question' }));
         if (/folder/i.test(request)) return say(JSON.stringify({ kind: 'answer', title: 'New folders' }));

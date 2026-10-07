@@ -13,6 +13,9 @@ A desktop agent for documents, folders and research, built from `CLAUDE_CODE_PRO
 - **Checkpoints**: Jarvis saves one before every step and keeps copies of every file it changes. Click a checkpoint and **Restore** to put the files back; the restore saves its own checkpoint first, so it can be undone. Then **Resume** from that step.
 - **Files tab** lists every file read, edited, created, moved, held or blocked. **Export audit log** saves every tool call as a CSV.
 - When Jarvis hits a folder without access, the chat shows an **Allow reading …** button instead of guessing.
+- **Check file access** (left column, or Settings) tests every folder directly, then checks that the model can call file tools, and gives a report you can copy. If macOS itself blocks JARVIS (Documents, Desktop, Downloads and external drives are protected), it says so and opens Privacy & Security for you.
+- Jarvis sees a list of the files it can read, and reads any file you name in your message (e.g. "summarise notes.md"), which helps small local models a lot.
+- A banner above the message box shows when changes are waiting for your Accept.
 
 **From Phase 2**: lanes, streaming chat, plans you approve or edit, autonomy levels, stop and resume, parallel lanes, memory, settings and notifications.
 

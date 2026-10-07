@@ -11,6 +11,13 @@ export class ScopeError extends Error {
   constructor(message: string, public scopePath: string, public needs: ScopeMode) { super(message); }
 }
 export class WorkspaceError extends Error {}
+/** macOS (not Jarvis's folder access) refused: the app needs permission in System Settings. */
+export class OsPermissionError extends WorkspaceError {}
+
+export const isOsDenied = (e: unknown) => ['EPERM', 'EACCES'].includes((e as NodeJS.ErrnoException)?.code ?? '');
+export function osDeniedMessage(where: string) {
+  return `macOS is not letting JARVIS open ${where}. Open System Settings → Privacy & Security → Files and Folders (or Full Disk Access), allow JARVIS, then quit and reopen JARVIS.`;
+}
 
 type Op = 'read' | 'write';
 export interface ToolContext { laneId: string; stepIndex: number | null; autonomy: Autonomy }
@@ -73,6 +80,9 @@ export class Workspace {
     fs.mkdirSync(blobDir, { recursive: true });
   }
 
+  /** True when macOS refused to list the workspace the last time we tried. */
+  osBlocked = false;
+
   root(): string | null {
     const w = this.db.getSettings().workspace;
     return w && fs.existsSync(w) ? w : null;
@@ -83,8 +93,15 @@ export class Workspace {
     const root = this.root();
     if (!root) return [];
     const have = new Map(this.db.listScopes().map((s) => [s.path, s.mode]));
-    const dirs = fs.readdirSync(root, { withFileTypes: true })
-      .filter((d) => d.isDirectory() && !d.name.startsWith('.') && !SKIP_DIRS.has(d.name)).map((d) => d.name);
+    let dirs: string[];
+    try {
+      dirs = fs.readdirSync(root, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && !d.name.startsWith('.') && !SKIP_DIRS.has(d.name)).map((d) => d.name);
+    } catch (e) {
+      if (isOsDenied(e)) { this.osBlocked = true; return this.db.listScopes(); }
+      throw e;
+    }
+    this.osBlocked = false;
     if (!have.has('')) this.db.setScope('', 'none');
     const inherit = have.get('') ?? 'none';
     for (const p of dirs) if (!have.has(p)) this.db.setScope(p, inherit);
@@ -151,6 +168,93 @@ export class Workspace {
     return { abs: real, rel: relative, scope };
   }
 
+  /** Readable files (two levels deep), so the model knows what exists before it calls a tool. */
+  overview(limit = 80): string {
+    const root = this.root();
+    if (!root) return '';
+    const out: string[] = [];
+    let rootReal: string;
+    try { rootReal = fs.realpathSync(root); } catch { return ''; }
+    const walk = (dir: string, depth: number) => {
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const d of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+        if (out.length >= limit) return;
+        if (d.name.startsWith('.') || SKIP_DIRS.has(d.name)) continue;
+        const rel = path.relative(rootReal, path.join(dir, d.name));
+        try { this.resolve(rel, 'read'); } catch { continue; }
+        out.push(d.isDirectory() ? `${rel}/` : rel);
+        if (d.isDirectory() && depth < 2) walk(path.join(dir, d.name), depth + 1);
+      }
+    };
+    walk(rootReal, 1);
+    return out.length ? `Files Jarvis can read right now (partial list):\n${out.join('\n')}${out.length >= limit ? '\n…' : ''}` : '';
+  }
+
+  /** Read files the user names in a message (by path or file name), so a small model has them in front of it. */
+  async attachMentioned(laneId: string, text: string, maxFiles = 3, maxChars = 12_000): Promise<string> {
+    const root = this.root();
+    if (!root) return '';
+    const wanted = new Set((text.match(/[\w./~-]+\.[A-Za-z0-9]{1,6}\b/g) ?? []).map((t) => t.replace(/^\.\//, '')));
+    if (!wanted.size) return '';
+    const rootReal = fs.realpathSync(root);
+    const found: string[] = [];
+    const walk = (dir: string, depth: number) => {
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const d of entries) {
+        if (found.length >= maxFiles || d.name.startsWith('.') || SKIP_DIRS.has(d.name)) continue;
+        const rel = path.relative(rootReal, path.join(dir, d.name));
+        if (d.isDirectory()) { if (depth < 4) walk(path.join(dir, d.name), depth + 1); continue; }
+        if (wanted.has(rel) || wanted.has(d.name)) found.push(rel);
+      }
+    };
+    walk(rootReal, 1);
+    const parts: string[] = [];
+    for (const rel of found) {
+      try {
+        const { result } = await this.exec('read_file', { path: rel }, { laneId, stepIndex: null, autonomy: 'ask_every_change' });
+        parts.push(`--- ${rel} ---\n${result.slice(0, maxChars)}`);
+      } catch { /* not readable: the model will be told when it tries */ }
+    }
+    return parts.length ? `The user mentioned these files; their current content:\n${parts.join('\n\n')}` : '';
+  }
+
+  /** Plain checks of what the OS and folder access allow, for Settings → Check file access. */
+  diagnose(): { ok: boolean; label: string; detail?: string }[] {
+    const out: { ok: boolean; label: string; detail?: string }[] = [];
+    const root = this.db.getSettings().workspace;
+    if (!root) return [{ ok: false, label: 'Workspace folder', detail: 'None chosen. Click "Workspace" in the title bar.' }];
+    if (!fs.existsSync(root)) return [{ ok: false, label: 'Workspace folder', detail: `${root} no longer exists. Choose it again.` }];
+    out.push({ ok: true, label: 'Workspace folder', detail: root });
+    try {
+      fs.readdirSync(root);
+      out.push({ ok: true, label: 'macOS lets JARVIS open the workspace' });
+    } catch (e) {
+      out.push({ ok: false, label: 'macOS lets JARVIS open the workspace', detail: isOsDenied(e) ? osDeniedMessage('the workspace folder') : (e as Error).message });
+      return out;
+    }
+    for (const s of this.syncScopes()) {
+      const name = s.path ? `${s.path}/` : 'Main folder';
+      const abs = path.join(root, s.path);
+      if (s.mode === 'none') { out.push({ ok: true, label: `${name}: no access (by your choice)` }); continue; }
+      try { fs.readdirSync(abs); } catch (e) {
+        out.push({ ok: false, label: `${name}: read`, detail: isOsDenied(e) ? osDeniedMessage(name) : (e as Error).message });
+        continue;
+      }
+      if (s.mode === 'read') { out.push({ ok: true, label: `${name}: read` }); continue; }
+      const probe = path.join(abs, `.jarvis-check-${process.pid}`);
+      try {
+        fs.writeFileSync(probe, 'check');
+        fs.rmSync(probe);
+        out.push({ ok: true, label: `${name}: read and write${s.mode === 'edit_ask' ? ' (changes wait for your Accept)' : ''}` });
+      } catch (e) {
+        out.push({ ok: false, label: `${name}: write`, detail: isOsDenied(e) ? osDeniedMessage(name) : (e as Error).message });
+      }
+    }
+    return out;
+  }
+
   /* ---------- tools ---------- */
 
   async exec(rawName: string, rawArgs: Record<string, unknown>, ctx: ToolContext): Promise<{ result: string; log?: [string, string] }> {
@@ -164,7 +268,9 @@ export class Workspace {
       throw new WorkspaceError(msg);
     }
     try {
-      const out = await this.run(name, args, ctx);
+      const out = await this.run(name, args, ctx).catch((err) => {
+        throw isOsDenied(err) ? new OsPermissionError(osDeniedMessage(target === '.' ? 'the workspace folder' : target)) : err;
+      });
       this.db.addAudit(ctx.laneId, name, target, 'ok');
       return out;
     } catch (e) {

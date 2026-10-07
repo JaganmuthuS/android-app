@@ -68,6 +68,7 @@ export function Sidebar() {
               </div>
             ))}
             {scopes.length === 0 && <p className="side-empty">This folder is empty.</p>}
+            <button type="button" className="link-btn check-link" onClick={() => { useStore.setState({ checkOnOpen: true }); openSettings(true); }}>Check file access</button>
           </div>
         )}
       </section>

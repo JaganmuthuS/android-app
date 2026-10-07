@@ -6,7 +6,7 @@ import {
   MAX_TOOL_ROUNDS, PLAN_INTRO, PLAN_INTRO_AUTO, SUMMARY_INSTRUCTION, TOOLS, TRIAGE_INSTRUCTION, TRIAGE_SCHEMA,
   parseTriage, stepInstruction, systemPrompt, workspaceSummary,
 } from './prompts';
-import { ScopeError, type Workspace } from './workspace';
+import { OsPermissionError, ScopeError, type Workspace } from './workspace';
 import type { JarvisEvent, Lane, LaneStatus, Message, PlanStep } from '../shared/types';
 
 export const NEW_LANE_TITLE = 'New lane';
@@ -17,6 +17,7 @@ export class LaneBusyError extends Error {}
 
 export class Agent {
   private controllers = new Map<string, AbortController>();
+  private attachments = new Map<string, string>();
   private active = 0;
   private waiting: (() => void)[] = [];
 
@@ -52,6 +53,7 @@ export class Agent {
     this.db.replaceSteps(laneId, []);
     this.emitSteps(laneId);
     this.setStatus(laneId, 'planning', 'Reading the request…', 0);
+    this.attachments.set(laneId, this.workspace ? await this.workspace.attachMentioned(laneId, clean).catch(() => '') : '');
     await this.task(laneId, (signal) => this.triage(laneId, signal));
   }
 
@@ -126,7 +128,7 @@ export class Agent {
     const history = this.history(laneId);
     const raw = await this.ollama.chat({
       model: settings.model,
-      messages: [{ role: 'system', content: this.system() }, ...history, { role: 'user', content: TRIAGE_INSTRUCTION }],
+      messages: [{ role: 'system', content: this.system(laneId) }, ...history, { role: 'user', content: TRIAGE_INSTRUCTION }],
       format: TRIAGE_SCHEMA,
       temperature: 0.2,
       signal,
@@ -139,7 +141,7 @@ export class Agent {
     }
 
     if (t.kind === 'answer') {
-      await this.respond(laneId, [{ role: 'system', content: this.system() }, ...history], signal, null);
+      await this.respond(laneId, [{ role: 'system', content: this.system(laneId) }, ...history], signal, null);
       const open = this.pendingChanges(laneId);
       if (open) this.setStatus(laneId, 'awaiting_review', reviewText(open), 0);
       else this.setStatus(laneId, 'idle', 'Answered', 0);
@@ -253,7 +255,10 @@ export class Agent {
             if (e instanceof ScopeError && !deniedScopes.has(e.scopePath)) {
               deniedScopes.add(e.scopePath);
               this.addMessage(laneId, 'system', 'error', { text: e.message, grantPath: e.scopePath, grantMode: e.needs });
-            } else if (!(e instanceof ScopeError)) {
+            } else if (e instanceof OsPermissionError && !deniedScopes.has('#os')) {
+              deniedScopes.add('#os');
+              this.addMessage(laneId, 'system', 'error', { text: e.message, privacy: true });
+            } else if (!(e instanceof ScopeError) && !(e instanceof OsPermissionError)) {
               this.addMessage(laneId, 'system', 'log', { verb: 'Failed', what: `${name} · ${(e as Error).message}` });
             }
           }
@@ -308,10 +313,14 @@ export class Agent {
     }
   }
 
-  private system() {
+  private system(laneId?: string) {
     const root = this.workspace?.root() ?? null;
     const scopes = root ? this.workspace!.syncScopes() : [];
-    return systemPrompt(this.db.listMemories(), new Date(), workspaceSummary(root, scopes));
+    let ws = workspaceSummary(root, scopes);
+    if (root && this.workspace!.osBlocked) ws += '\nmacOS is currently blocking JARVIS from this folder, so file tools will fail. Tell the user to allow JARVIS in System Settings → Privacy & Security → Files and Folders.';
+    else if (root) ws += `\n${this.workspace!.overview()}`;
+    const attached = laneId ? this.attachments.get(laneId) : '';
+    return systemPrompt(this.db.listMemories(), new Date(), [ws, attached].filter(Boolean).join('\n\n'));
   }
 
   /** The conversation as the model sees it: user requests and Jarvis replies. */
@@ -326,7 +335,7 @@ export class Agent {
     const steps = this.db.listSteps(laneId);
     const plan = steps.map((s) => `${s.index + 1}. ${s.text} [${s.state}]`).join('\n');
     return [
-      { role: 'system', content: `${this.system()}\n\nThe approved plan:\n${plan}` },
+      { role: 'system', content: `${this.system(laneId)}\n\nThe approved plan:\n${plan}` },
       ...this.history(laneId),
     ];
   }

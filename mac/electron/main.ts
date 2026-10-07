@@ -215,6 +215,36 @@ function registerIpc() {
   handle('checkpoints:list', (id: string) => db.listCheckpoints(str(id)));
   handle('checkpoints:restore', (id: string) => agent.restoreCheckpoint(str(id)));
   handle('touches:list', () => db.listTouches());
+  handle('diagnose', async () => {
+    const lines = workspace.diagnose();
+    const s = db.getSettings();
+    const status = await ollama.status(s.model);
+    lines.push({ ok: status.reachable, label: 'Ollama is running', detail: status.reachable ? `version ${status.version}` : 'Open the Ollama app.' });
+    if (status.reachable) {
+      lines.push({ ok: status.modelInstalled, label: `Model ${s.model} is downloaded`, detail: status.modelInstalled ? undefined : 'Download it in Settings.' });
+      if (status.modelInstalled) {
+        const caps = await ollama.capabilities(s.model);
+        const tools = caps.length ? caps.includes('tools') : null;
+        lines.push({ ok: tools !== false, label: `${s.model} can use file tools`, detail: tools === null ? 'Ollama did not say; update Ollama to check.' : tools ? undefined : 'Choose qwen3:8b or qwen3:4b in Settings.' });
+        if (tools !== false) {
+          try {
+            const res = await ollama.round({
+              model: s.model,
+              messages: [{ role: 'system', content: 'You can call tools.' }, { role: 'user', content: 'List the files at the top of the workspace. Use the list_dir tool with path ".".' }],
+              tools: [{ type: 'function', function: { name: 'list_dir', description: 'List files in a folder', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Folder' } }, required: ['path'] } } }],
+              signal: AbortSignal.timeout(90_000),
+            });
+            const used = res.toolCalls.length > 0;
+            lines.push({ ok: used, label: 'The model actually calls file tools', detail: used ? `called ${res.toolCalls[0].function.name}` : `It answered in text instead: “${res.content.slice(0, 120)}”. Try qwen3:8b.` });
+          } catch (e) {
+            lines.push({ ok: false, label: 'The model actually calls file tools', detail: (e as Error).message });
+          }
+        }
+      }
+    }
+    return { version: app.getVersion(), lines };
+  });
+  handle('open:privacy', () => shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders'));
   handle('audit:export', async () => {
     const res = await dialog.showSaveDialog(win!, { title: 'Export the audit log', defaultPath: `jarvis-audit-${new Date().toISOString().slice(0, 10)}.csv` });
     if (res.canceled || !res.filePath) return null;

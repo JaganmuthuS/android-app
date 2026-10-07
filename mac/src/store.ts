@@ -27,6 +27,7 @@ interface State {
   touches: FileTouch[];
   focusedChange: string | null;
   cpSel: string | null;
+  checkOnOpen: boolean;
 }
 
 interface Actions {
@@ -130,7 +131,7 @@ export const useStore = create<Store>((set, get) => {
   return {
     ready: false, lanes: [], laneId: null, tab: 'doc', messages: {}, steps: {}, streams: {}, drafts: {},
     memories: [], settings: null, engine: null, pull: null, settingsOpen: false, toast: null,
-    scopes: [], changes: {}, checkpoints: {}, touches: [], focusedChange: null, cpSel: null,
+    scopes: [], changes: {}, checkpoints: {}, touches: [], focusedChange: null, cpSel: null, checkOnOpen: false,
 
     async init() {
       if (!api) return;

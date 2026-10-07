@@ -269,3 +269,54 @@ describe('what local models actually send', () => {
     expect(db.listTouches()[0]).toMatchObject({ path: '(main folder)', format: 'Folder' });
   });
 });
+
+describe('helping a small model', () => {
+  it('maps readable files and leaves out folders without access', () => {
+    const map = ws.overview();
+    expect(map).toContain('Finance/Sept-close.csv');
+    expect(map).toContain('Board/Q3-Board.md');
+    expect(map).not.toContain('Personal');
+  });
+
+  it('reads files the user names in a message, but only readable ones', async () => {
+    const text = await ws.attachMentioned(laneId, 'Compare Sept-close.csv with Q3-Board.md and diary.md');
+    expect(text).toContain('--- Finance/Sept-close.csv ---');
+    expect(text).toContain('Net revenue,4.82');
+    expect(text).toContain('--- Board/Q3-Board.md ---');
+    expect(text).not.toContain('private');
+  });
+
+  it('reports macOS refusals as a permission problem with the fix', async () => {
+    (ws as unknown as { run: () => Promise<never> }).run = async () => { throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' }); };
+    await expect(ws.exec('read_file', { path: 'Board/Q3-Board.md' }, ctx())).rejects.toThrow(/System Settings → Privacy & Security/);
+  });
+
+  it('checks each folder directly', () => {
+    const lines = ws.diagnose();
+    expect(lines.find((l) => l.label.startsWith('Board/'))).toMatchObject({ ok: true, label: 'Board/: read and write' });
+    expect(lines.find((l) => l.label.startsWith('Finance/'))).toMatchObject({ ok: true, label: 'Finance/: read' });
+    expect(lines.find((l) => l.label.startsWith('Personal/'))?.label).toMatch(/no access/);
+    expect(fs.readdirSync(path.join(root, 'Board')).some((f) => f.startsWith('.jarvis-check'))).toBe(false);
+  });
+});
+
+describe('agent context', () => {
+  it('gives the model the file map and files named in the request', async () => {
+    let system = '';
+    const model = {
+      async chat() { return JSON.stringify({ kind: 'answer', title: 'x' }); },
+      async round(o: { messages: ChatMessage[]; format?: object; onText?: (t: string) => void }) {
+        if (o.format) return { content: JSON.stringify({ kind: 'answer', title: 'x' }), toolCalls: [] };
+        system = o.messages[0].content;
+        o.onText?.('ok');
+        return { content: 'ok', toolCalls: [] };
+      },
+    } as unknown as Ollama;
+    const agent = new Agent(db, model, () => {}, () => {}, ws);
+    await agent.send(laneId, 'What does Q3-Board.md say?');
+    expect(system).toContain('Files Jarvis can read right now');
+    expect(system).toContain('slightly ahead of forecast');
+    expect(db.listMessages(laneId).some((m) => m.kind === 'log' && m.payload.verb === 'Read')).toBe(false); // attaching is quiet
+    expect(db.listTouches().some((t) => t.path === 'Board/Q3-Board.md' && t.action === 'read')).toBe(true);
+  });
+});

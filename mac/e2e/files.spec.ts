@@ -59,7 +59,7 @@ test('file work: scoped read, reviewed edit, gate, checkpoints, restore', async 
   expect(await marked('ins')).toMatch(/82M.*3\.1%.*above/);
   await expect(page.locator('.doc-text')).toContainText('Net revenue was');
   await expect(page.locator('.change-why')).toHaveText('Source: Finance/Sept-close.csv, row 2');
-  await page.getByRole('button', { name: 'Accept', exact: true }).click();
+  await page.locator('.rail').getByRole('button', { name: 'Accept', exact: true }).click();
   await expect(page.getByText('Changes · 0 open')).toBeVisible();
   expect(board()).toContain('€4.82M, 3.1% above');
 
@@ -111,7 +111,7 @@ test('creating folders: inside an edit folder, and at the top of the workspace',
   await input.press('Enter');
   await expect(page.locator('.log').filter({ hasText: 'Board/2026 · held for review' })).toBeVisible();
   await expect(page.locator('.doc-note')).toContainText('Accepting creates the folder Board/2026/');
-  await page.getByRole('button', { name: 'Accept', exact: true }).click();
+  await page.locator('.rail').getByRole('button', { name: 'Accept', exact: true }).click();
   await expect(page.getByText('Changes · 0 open')).toBeVisible();
   expect(fs.statSync(path.join(root, 'Board/2026')).isDirectory()).toBe(true);
 
@@ -119,7 +119,7 @@ test('creating folders: inside an edit folder, and at the top of the workspace',
   await page.getByRole('button', { name: '+ New lane' }).click();
   await input.fill('Make a new folder called Reports');
   await input.press('Enter');
-  await page.getByRole('button', { name: 'Accept', exact: true }).click();
+  await page.locator('.rail').getByRole('button', { name: 'Accept', exact: true }).click();
   await expect(page.getByLabel('Access for Reports')).toHaveValue('edit_ask');
   expect(fs.statSync(path.join(root, 'Reports')).isDirectory()).toBe(true);
 
@@ -128,5 +128,30 @@ test('creating folders: inside an edit folder, and at the top of the workspace',
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(page.getByLabel('Access for FromFinder')).toHaveValue('edit_ask');
   await page.screenshot({ path: 'test-results/phase3-folders.png' });
+  await app.close();
+});
+
+test('check file access and the waiting-changes banner', async () => {
+  const { app, page } = await launch();
+  await page.getByLabel('Access for Board').selectOption('edit_ask');
+  await page.getByLabel('Access for Finance').selectOption('read');
+  await page.getByRole('button', { name: 'Check file access' }).click();
+  const list = page.locator('.check-list');
+  await expect(list).toContainText('macOS lets JARVIS open the workspace');
+  await expect(list).toContainText('Board/: read and write (changes wait for your Accept)');
+  await expect(list).toContainText('Finance/: read');
+  await expect(list).toContainText('Personal/: no access (by your choice)');
+  await expect(list).toContainText('The model actually calls file tools');
+  await expect(list.locator('li.bad')).toHaveCount(0);
+  await page.screenshot({ path: 'test-results/phase3-check.png' });
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
+
+  await page.getByLabel('Message Jarvis').fill('Create a folder called Board/2026');
+  await page.getByLabel('Message Jarvis').press('Enter');
+  const banner = page.locator('.pending-banner');
+  await expect(banner).toContainText('1 change waiting for you');
+  await banner.getByRole('button', { name: 'Accept', exact: true }).click();
+  await expect(banner).toBeHidden();
+  expect(fs.statSync(path.join(root, 'Board/2026')).isDirectory()).toBe(true);
   await app.close();
 });

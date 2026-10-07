@@ -1,7 +1,7 @@
 {
   "name": "jarvis-workspace",
   "productName": "JARVIS",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "JARVIS: a macOS desktop agent for documents, folders and research.",
   "private": true,
   "main": "dist-electron/electron/main.js",
@@ -32,7 +32,14 @@
         }
       ],
       "hardenedRuntime": false,
-      "identity": "-"
+      "identity": "-",
+      "extendInfo": {
+        "NSDocumentsFolderUsageDescription": "JARVIS reads and edits files in the workspace folder you choose.",
+        "NSDesktopFolderUsageDescription": "JARVIS reads and edits files in the workspace folder you choose.",
+        "NSDownloadsFolderUsageDescription": "JARVIS reads and edits files in the workspace folder you choose.",
+        "NSRemovableVolumesUsageDescription": "JARVIS reads and edits files in the workspace folder you choose.",
+        "NSNetworkVolumesUsageDescription": "JARVIS reads and edits files in the workspace folder you choose."
+      }
     },
     "directories": {
       "output": "release"

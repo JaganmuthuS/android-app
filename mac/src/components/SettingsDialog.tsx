@@ -1,5 +1,6 @@
 import { Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import type { DiagnosticLine } from '../../shared/types';
 import { RECOMMENDED_MODEL, type Autonomy } from '../../shared/types';
 import { useStore } from '../store';
 import { OLLAMA_DOWNLOAD, PullBar } from './SetupCard';
@@ -21,10 +22,27 @@ export function SettingsDialog() {
   const [url, setUrl] = useState('');
   const [memo, setMemo] = useState('');
   const [confirmWipe, setConfirmWipe] = useState(false);
+  const [check, setCheck] = useState<{ running: boolean; lines: DiagnosticLine[]; version: string } | null>(null);
+  const runCheck = async () => {
+    setCheck({ running: true, lines: [], version: '' });
+    try {
+      const r = await window.jarvis!.diagnose();
+      setCheck({ running: false, ...r });
+    } catch (e) {
+      setCheck({ running: false, version: '', lines: [{ ok: false, label: 'Check failed', detail: String((e as Error).message) }] });
+    }
+  };
+  const report = check && !check.running
+    ? [`JARVIS ${check.version}`, ...check.lines.map((l) => `${l.ok ? 'OK ' : 'NO '} ${l.label}${l.detail ? ` — ${l.detail}` : ''}`)].join('\n')
+    : '';
 
   useEffect(() => {
     if (open && settings) { setModel(settings.model); setUrl(settings.ollamaUrl); setConfirmWipe(false); }
   }, [open, settings]);
+  const autoCheck = useStore((s) => s.checkOnOpen);
+  useEffect(() => {
+    if (open && autoCheck) { useStore.setState({ checkOnOpen: false }); void runCheck(); }
+  }, [open, autoCheck]);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') st.openSettings(false); };
@@ -41,6 +59,28 @@ export function SettingsDialog() {
     <div className="dialog-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) st.openSettings(false); }}>
       <div className="dialog settings" role="dialog" aria-modal="true" aria-labelledby="settings-title">
         <div className="dialog-title settings-title" id="settings-title">Settings <span className="version">JARVIS {window.jarvis?.version}</span></div>
+
+        <section className="settings-section" aria-labelledby="check-title">
+          <h6 id="check-title">Check file access</h6>
+          <p className="field-hint" style={{ marginTop: 0 }}>Tests each folder directly (no AI), then checks that the model can use file tools. Takes up to a minute.</p>
+          <div className="row">
+            <button type="button" className="btn btn-primary" disabled={check?.running} onClick={() => void runCheck()}>{check?.running ? 'Checking…' : 'Run the check'}</button>
+            {report && <button type="button" className="btn btn-secondary" onClick={() => { void navigator.clipboard.writeText(report).then(() => st.notice('Report copied. Paste it to whoever is helping you.'), () => st.notice('Copy failed. Select the lines and copy them.')); }}>Copy report</button>}
+            {check?.lines.some((l) => /System Settings/.test(l.detail ?? '')) && (
+              <button type="button" className="btn btn-secondary" onClick={() => void window.jarvis?.openPrivacySettings()}>Open Privacy settings</button>
+            )}
+          </div>
+          {check && !check.running && (
+            <ul className="check-list">
+              {check.lines.map((l, i) => (
+                <li key={i} className={l.ok ? 'ok' : 'bad'}>
+                  <span className="mark" aria-label={l.ok ? 'OK' : 'Problem'}>{l.ok ? '✓' : '✕'}</span>
+                  <span><b>{l.label}</b>{l.detail && <span className="detail">{l.detail}</span>}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
 
         <section className="settings-section">
           <h6>AI engine</h6>

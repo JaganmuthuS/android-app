@@ -197,6 +197,12 @@ function ErrorCard({ message }: { message: Message }) {
     <div className="error-card" role="alert">
       <b className="label">{grantPath !== null ? 'No access' : 'Problem'}</b>
       <span>{String(p.text)}</span>
+      {p.privacy === true && (
+        <span className="row-actions">
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => void window.jarvis?.openPrivacySettings()}>Open Privacy settings</button>
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => { useStore.setState({ checkOnOpen: true }); useStore.getState().openSettings(true); }}>Check file access</button>
+        </span>
+      )}
       {grantPath !== null && current !== undefined && (
         granted
           ? <span className="muted">Access granted. Send the request again to continue.</span>
@@ -234,6 +240,23 @@ function GateCard({ lane, message }: { lane: Lane; message: Message }) {
   );
 }
 
+/** Edits wait for the user; make that impossible to miss. */
+function PendingBanner({ lane }: { lane: Lane }) {
+  const open = useStore((s) => (s.changes[lane.id] ?? []).filter((c) => c.status === 'pending').length);
+  const firstId = useStore((s) => (s.changes[lane.id] ?? []).find((c) => c.status === 'pending')?.id ?? null);
+  if (!open) return null;
+  const st = useStore.getState();
+  return (
+    <div className="pending-banner" role="status">
+      <span><b>{open} change{open > 1 ? 's' : ''} waiting for you.</b> Nothing is saved to your files until you accept.</span>
+      <span className="row-actions">
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => firstId && st.focusChange(firstId)}>Review</button>
+        <button type="button" className="btn btn-primary btn-sm" onClick={() => void (open > 1 ? st.acceptAll() : st.decideChange(firstId!, 'accept'))}>{open > 1 ? 'Accept all' : 'Accept'}</button>
+      </span>
+    </div>
+  );
+}
+
 function Composer({ lane }: { lane: Lane }) {
   const draft = useStore((s) => s.drafts[lane.id] ?? '');
   const ready = useStore(engineReady);
@@ -244,6 +267,7 @@ function Composer({ lane }: { lane: Lane }) {
 
   return (
     <div className="composer">
+      <PendingBanner lane={lane} />
       <div className="composer-row">
         <textarea
           ref={inputRef}

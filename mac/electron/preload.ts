@@ -42,6 +42,8 @@ const api: JarvisApi = {
   restoreCheckpoint: call('checkpoints:restore') as JarvisApi['restoreCheckpoint'],
   listTouches: call('touches:list') as JarvisApi['listTouches'],
   exportAudit: call('audit:export') as JarvisApi['exportAudit'],
+  diagnose: call('diagnose') as JarvisApi['diagnose'],
+  openPrivacySettings: call('open:privacy') as JarvisApi['openPrivacySettings'],
   onEvent(listener) {
     const h = (_e: IpcRendererEvent, ev: JarvisEvent) => listener(ev);
     ipcRenderer.on('jarvis:event', h);
