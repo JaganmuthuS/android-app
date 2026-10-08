@@ -54,7 +54,24 @@ export interface Settings {
   autonomy: Autonomy;
   maxParallel: number;
   workspace: string | null;   // absolute path of the folder Jarvis works in
+  webAccess: boolean;         // web search and page reading
 }
+
+/** A page or file a lane read, numbered per lane so answers and documents can cite it as [n]. */
+export interface Source {
+  id: string;
+  laneId: string;
+  n: number;
+  url: string;               // https://… or file:<workspace path>
+  title: string;
+  domain: string;
+  kind: 'official' | 'reference' | 'web' | 'file';
+  state: 'read' | 'cited' | 'failed';
+  note: string;              // why it was not cited, or why it could not be read
+  published?: string;
+  ts: number;
+}
+export interface WebSearch { laneId: string; query: string; provider: string; results: number; ts: number }
 
 export type ScopeMode = 'none' | 'read' | 'edit_ask' | 'edit_auto';
 
@@ -134,6 +151,7 @@ export type JarvisEvent =
   | { type: 'changes'; laneId: string; changes: Change[] }
   | { type: 'checkpoints'; laneId: string; checkpoints: Checkpoint[] }
   | { type: 'touches'; touches: FileTouch[] }
+  | { type: 'sources'; laneId: string; sources: Source[]; searches: WebSearch[] }
   | { type: 'update'; update: UpdateState };
 
 export interface JarvisApi {
@@ -173,6 +191,7 @@ export interface JarvisApi {
   listCheckpoints(laneId: string): Promise<Checkpoint[]>;
   restoreCheckpoint(checkpointId: string): Promise<void>;
   listTouches(): Promise<FileTouch[]>;
+  listSources(laneId: string): Promise<{ sources: Source[]; searches: WebSearch[] }>;
   exportAudit(): Promise<string | null>;
   diagnose(): Promise<{ version: string; lines: DiagnosticLine[] }>;
   openPrivacySettings(): Promise<void>;
@@ -191,4 +210,5 @@ export const DEFAULT_SETTINGS: Settings = {
   autonomy: 'ask_every_change',
   maxParallel: 2,
   workspace: null,
+  webAccess: true,
 };

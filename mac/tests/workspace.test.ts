@@ -178,7 +178,7 @@ describe('agent with tools', () => {
     const msgs = db.listMessages(laneId);
     expect(msgs.filter((m) => m.kind === 'log').map((m) => m.payload.verb)).toEqual(['Read', 'Edited']);
     expect(msgs.find((m) => m.kind === 'error')?.payload).toMatchObject({ grantPath: 'Personal', grantMode: 'read' });
-    expect(seen.at(-1)!.filter((m) => m.role === 'tool').map((m) => m.content.slice(0, 6))).toEqual(['metric', 'Staged', 'ERROR:']);
+    expect(seen.at(-1)!.filter((m) => m.role === 'tool').map((m) => m.content.slice(0, 6))).toEqual(['Source', 'Staged', 'ERROR:']);
     expect(db.getLane(laneId)).toMatchObject({ status: 'awaiting_review', statusText: '1 change to review' });
     expect(read('Board/Q3-Board.md')).toContain('€4.61M');
 

@@ -7,6 +7,26 @@ import { STYLES_XML, makeDocx, makePdf, makePptx, makeXlsx } from './fixtures';
 const part = async (b: Buffer, name: string) => (await JSZip.loadAsync(b)).file(name)!.async('string');
 
 describe('Word', () => {
+  it('turns [n] citations into real, tracked footnotes', async () => {
+    const cite = (n: number) => (n === 1 ? 'Key ECB interest rates. https://www.ecb.europa.eu/ (published 2026-09-11).' : null);
+    const once = await docxInsertParagraph(await makeDocx(), 'June forecast', 'The deposit rate is 2.00% [1]; see also [7].', undefined, cite);
+    const doc = await part(once, 'word/document.xml');
+    expect(doc).toMatch(/2\.00%<\/w:t><\/w:r><w:r><w:rPr><w:vertAlign w:val="superscript"\/><\/w:rPr><w:footnoteReference w:id="1"\/><\/w:r><w:r><w:rPr><w:sz w:val="22"\/><\/w:rPr><w:t xml:space="preserve">; see also \[7\]\.<\/w:t>/);
+    const notes = await part(once, 'word/footnotes.xml');
+    expect(notes).toContain('w:type="separator" w:id="-1"');
+    expect(notes).toMatch(/<w:footnote w:id="1"><w:p><w:ins [^>]*w:author="JARVIS"[^>]*><w:r>[\s\S]*<w:footnoteRef\/><\/w:r><w:r><w:t xml:space="preserve"> Key ECB interest rates\. https:\/\/www\.ecb\.europa\.eu\/ \(published 2026-09-11\)\.<\/w:t>/);
+    expect(await part(once, 'word/_rels/document.xml.rels')).toContain('relationships/footnotes" Target="footnotes.xml"');
+    expect(await part(once, '[Content_Types].xml')).toContain('PartName="/word/footnotes.xml"');
+    // A second citation adds footnote 2 to the same part without duplicating the links.
+    const twice = await docxInsertParagraph(once, 'see also', 'Unchanged since June [1].', undefined, cite);
+    expect(await part(twice, 'word/footnotes.xml')).toContain('<w:footnote w:id="2">');
+    expect((await part(twice, 'word/_rels/document.xml.rels')).match(/footnotes\.xml/g)).toHaveLength(1);
+    const text = await docxText(twice);
+    expect(text).toContain('The deposit rate is 2.00%[^1]; see also [7].');
+    expect(text).toMatch(/Footnotes:\n\[\^1\]  ?Key ECB interest rates/);
+  });
+
+
   it('reads paragraphs and headings', async () => {
     const t = await docxText(await makeDocx());
     expect(t).toContain('[Heading1] 2. Financial summary');

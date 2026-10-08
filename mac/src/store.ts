@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { api } from './api';
 import type {
-  Autonomy, Change, Checkpoint, EngineStatus, UpdateState, FileScope, FileTouch, JarvisEvent, Lane, Memory, Message, PlanStep, PullProgress, ScopeMode, Settings, UiState,
+  Autonomy, Change, Checkpoint, EngineStatus, Source, WebSearch, UpdateState, FileScope, FileTouch, JarvisEvent, Lane, Memory, Message, PlanStep, PullProgress, ScopeMode, Settings, UiState,
 } from '../shared/types';
 
 type Tab = UiState['tab'];
@@ -25,6 +25,8 @@ interface State {
   changes: Record<string, Change[]>;
   checkpoints: Record<string, Checkpoint[]>;
   touches: FileTouch[];
+  sources: Record<string, { sources: Source[]; searches: WebSearch[] }>;
+  focusedSource: number | null;
   focusedChange: string | null;
   cpSel: string | null;
   checkOnOpen: boolean;
@@ -62,6 +64,8 @@ interface Actions {
   decideChange(id: string, d: 'accept' | 'reject' | 'undo'): Promise<void>;
   acceptAll(): Promise<void>;
   focusChange(id: string): void;
+  focusSource(n: number): void;
+  openExternal(url: string): void;
   pickCheckpoint(id: string): void;
   restore(): Promise<void>;
   exportAudit(): Promise<void>;
@@ -111,15 +115,16 @@ export const useStore = create<Store>((set, get) => {
       case 'changes': set((s) => ({ changes: { ...s.changes, [e.laneId]: e.changes } })); break;
       case 'checkpoints': set((s) => ({ checkpoints: { ...s.checkpoints, [e.laneId]: e.checkpoints } })); break;
       case 'touches': set({ touches: e.touches }); break;
+      case 'sources': set((s) => ({ sources: { ...s.sources, [e.laneId]: { sources: e.sources, searches: e.searches } } })); break;
       case 'update': set((s) => ({ update: { ...s.update, ...e.update, info: e.update.info ?? (e.update.state === 'none' ? undefined : s.update.info), error: e.update.error } })); break;
     }
   };
 
   const loadLane = async (id: string) => {
     if (!api) return;
-    const [messages, steps, changes, checkpoints] = await Promise.all([api.listMessages(id), api.listSteps(id), api.listChanges(id), api.listCheckpoints(id)]);
+    const [messages, steps, changes, checkpoints, sources] = await Promise.all([api.listMessages(id), api.listSteps(id), api.listChanges(id), api.listCheckpoints(id), api.listSources(id)]);
     set((s) => ({
-      messages: { ...s.messages, [id]: messages }, steps: { ...s.steps, [id]: steps },
+      messages: { ...s.messages, [id]: messages }, steps: { ...s.steps, [id]: steps }, sources: { ...s.sources, [id]: sources },
       changes: { ...s.changes, [id]: changes }, checkpoints: { ...s.checkpoints, [id]: checkpoints },
     }));
   };
@@ -136,7 +141,7 @@ export const useStore = create<Store>((set, get) => {
   return {
     ready: false, lanes: [], laneId: null, tab: 'doc', messages: {}, steps: {}, streams: {}, drafts: {},
     memories: [], settings: null, engine: null, pull: null, settingsOpen: false, toast: null,
-    scopes: [], changes: {}, checkpoints: {}, touches: [], focusedChange: null, cpSel: null, checkOnOpen: false,
+    scopes: [], changes: {}, checkpoints: {}, touches: [], sources: {}, focusedSource: null, focusedChange: null, cpSel: null, checkOnOpen: false,
     update: { state: 'idle' },
 
     async init() {
@@ -155,7 +160,7 @@ export const useStore = create<Store>((set, get) => {
       await get().refreshEngine();
     },
     async selectLane(id) {
-      set({ laneId: id, focusedChange: null, cpSel: null });
+      set({ laneId: id, focusedChange: null, focusedSource: null, cpSel: null });
       void api?.setUiState({ laneId: id });
       await guard(() => loadLane(id));
     },
@@ -227,6 +232,8 @@ export const useStore = create<Store>((set, get) => {
     async decideChange(id, d) { set({ focusedChange: id }); await guard(() => api!.decideChange(id, d)); },
     async acceptAll() { const id = laneId(); if (id) await guard(() => api!.acceptAll(id)); },
     focusChange(id) { set({ focusedChange: id, tab: 'doc' }); void api?.setUiState({ tab: 'doc' }); },
+    focusSource(n) { set({ focusedSource: n, tab: 'research' }); void api?.setUiState({ tab: 'research' }); },
+    openExternal(url) { void guard(() => api!.openExternal(url)); },
     pickCheckpoint(id) { set((s) => ({ cpSel: s.cpSel === id ? null : id })); },
     async restore() {
       const id = get().cpSel;
@@ -264,5 +271,7 @@ export const isWaiting = (lane: Lane) => lane.status === 'awaiting_plan_approval
 export const engineReady = (s: State) => !!s.engine?.reachable && !!s.engine.modelInstalled;
 const EMPTY_CHANGES: Change[] = [];
 const EMPTY_CPS: Checkpoint[] = [];
+const EMPTY_SOURCES = { sources: [] as Source[], searches: [] as WebSearch[] };
+export const laneSources = (s: State) => (s.laneId ? s.sources[s.laneId] ?? EMPTY_SOURCES : EMPTY_SOURCES);
 export const laneChanges = (s: State) => (s.laneId ? s.changes[s.laneId] ?? EMPTY_CHANGES : EMPTY_CHANGES);
 export const laneCheckpoints = (s: State) => (s.laneId ? s.checkpoints[s.laneId] ?? EMPTY_CPS : EMPTY_CPS);

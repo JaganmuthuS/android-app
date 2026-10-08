@@ -37,11 +37,18 @@ export async function docxText(bytes: Buffer): Promise<string> {
   const zip = await loadZip(bytes);
   const xml = await zip.file('word/document.xml')?.async('string');
   if (!xml) throw new FormatError('This Word file has no document body.');
-  return (xml.match(PARA) ?? []).map((p) => {
+  // Footnote references show as [^id], so a reader (and the change view) can see where they sit.
+  const withRefs = (p: string) => p.replace(/<w:footnoteReference\b[^>]*w:id="(\d+)"[^>]*\/>/g, '<w:t>[^$1]</w:t>');
+  const body = (xml.match(PARA) ?? []).map((p) => {
     const style = p.match(/<w:pStyle w:val="([^"]+)"/)?.[1];
-    const text = paraText(p);
+    const text = paraText(withRefs(p));
     return style && /^Heading|^Title/i.test(style) && text ? `[${style}] ${text}` : text;
   }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  const notesXml = await zip.file('word/footnotes.xml')?.async('string');
+  const notes = notesXml ? [...notesXml.matchAll(/<w:footnote\b([^>]*)>([\s\S]*?)<\/w:footnote>/g)]
+    .filter((m) => !/w:type=/.test(m[1]))
+    .map((m) => `[^${m[1].match(/w:id="(-?\d+)"/)?.[1]}] ${(m[2].match(PARA) ?? []).map(paraText).join(' ').trim()}`) : [];
+  return notes.length ? `${body}\n\nFootnotes:\n${notes.join('\n')}` : body;
 }
 
 let revisionId = 9000;
@@ -108,8 +115,11 @@ export async function docxReplace(bytes: Buffer, find: string, replace: string):
   return zipBytes(zip);
 }
 
-/** Add a new paragraph after the paragraph containing `after`, as a tracked insertion. */
-export async function docxInsertParagraph(bytes: Buffer, after: string, text: string, style?: string): Promise<Buffer> {
+/**
+ * Add a new paragraph after the paragraph containing `after`, as a tracked insertion.
+ * Citation markers like [2] become real Word footnotes when `footnote(2)` knows the source.
+ */
+export async function docxInsertParagraph(bytes: Buffer, after: string, text: string, style?: string, footnote?: (n: number) => string | null): Promise<Buffer> {
   if (!text.trim()) throw new FormatError('Give the text of the new paragraph.');
   const zip = await loadZip(bytes);
   const xml = await zip.file('word/document.xml')?.async('string');
@@ -129,11 +139,68 @@ export async function docxInsertParagraph(bytes: Buffer, after: string, text: st
   pPr = /<w:rPr>/.test(pPr) ? pPr.replace(/<w:rPr>/, `<w:rPr>${mark}`) : pPr.replace('</w:pPr>', `<w:rPr>${mark}</w:rPr></w:pPr>`);
   const firstRPr = anchor[0].match(RUN)?.[0].match(/<w:rPr>[\s\S]*?<\/w:rPr>/)?.[0] ?? '';
   const runRPr = style ? '' : firstRPr; // a new heading takes its look from the style
+  const notes = footnote ? await footnoteWriter(zip) : null;
+  const tRun = (t: string) => (t ? `<w:r>${runRPr}<w:t xml:space="preserve">${encode(t)}</w:t></w:r>` : '');
+  const runs = (line: string) => {
+    if (!notes) return tRun(line);
+    let out = '';
+    let last = 0;
+    for (const m of line.matchAll(/\s*\[(\d{1,3})\]/g)) {
+      const cite = footnote!(Number(m[1]));
+      if (!cite) continue;
+      out += tRun(line.slice(last, m.index));
+      out += `<w:r><w:rPr>${notes.refStyle}<w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="${notes.add(cite)}"/></w:r>`;
+      last = m.index! + m[0].length;
+    }
+    return out + tRun(line.slice(last));
+  };
   const lines = text.split('\n');
-  const newParas = lines.map((line) => `<w:p>${pPr}<w:ins ${stamp()}><w:r>${runRPr}<w:t xml:space="preserve">${encode(line)}</w:t></w:r></w:ins></w:p>`).join('');
+  const newParas = lines.map((line) => `<w:p>${pPr}<w:ins ${stamp()}>${runs(line)}</w:ins></w:p>`).join('');
   const at = anchor.index! + anchor[0].length;
   zip.file('word/document.xml', xml.slice(0, at) + newParas + xml.slice(at));
+  if (notes) await notes.save();
   return zipBytes(zip);
+}
+
+const FOOTNOTES_TYPE = 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml';
+const FOOTNOTES_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes';
+const NEW_FOOTNOTES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+  + '<w:footnote w:type="separator" w:id="-1"><w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:separator/></w:r></w:p></w:footnote>'
+  + '<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>'
+  + '</w:footnotes>';
+
+/** Adds footnotes to a Word file, creating the footnotes part (and its links) when the file has none. */
+async function footnoteWriter(zip: JSZip) {
+  let notes = await zip.file('word/footnotes.xml')?.async('string') ?? null;
+  const created = notes === null;
+  if (!notes) notes = NEW_FOOTNOTES;
+  const styles = await zip.file('word/styles.xml')?.async('string') ?? '';
+  const has = (id: string) => styles.includes(`w:styleId="${id}"`);
+  const refStyle = has('FootnoteReference') ? '<w:rStyle w:val="FootnoteReference"/>' : '';
+  const textStyle = has('FootnoteText') ? '<w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr>' : '';
+  let next = Math.max(0, ...[...notes.matchAll(/<w:footnote\b[^>]*w:id="(-?\d+)"/g)].map((m) => Number(m[1]))) + 1;
+  const added: string[] = [];
+  return {
+    refStyle,
+    add(text: string) {
+      const id = next++;
+      added.push(`<w:footnote w:id="${id}"><w:p>${textStyle}<w:ins ${stamp()}><w:r><w:rPr>${refStyle}<w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r>`
+        + `<w:r><w:t xml:space="preserve"> ${encode(text)}</w:t></w:r></w:ins></w:p></w:footnote>`);
+      return id;
+    },
+    async save() {
+      if (!added.length) return;
+      zip.file('word/footnotes.xml', notes!.replace(/<\/w:footnotes>\s*$/, `${added.join('')}</w:footnotes>`));
+      if (!created) return;
+      const relsPath = 'word/_rels/document.xml.rels';
+      let rels = await zip.file(relsPath)?.async('string') ?? '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+      if (!rels.includes(FOOTNOTES_REL)) rels = rels.replace('</Relationships>', `<Relationship Id="rIdJarvisFootnotes" Type="${FOOTNOTES_REL}" Target="footnotes.xml"/></Relationships>`);
+      zip.file(relsPath, rels);
+      let types = await zip.file('[Content_Types].xml')?.async('string') ?? '';
+      if (!types.includes('/word/footnotes.xml')) types = types.replace('</Types>', `<Override PartName="/word/footnotes.xml" ContentType="${FOOTNOTES_TYPE}"/></Types>`);
+      zip.file('[Content_Types].xml', types);
+    },
+  };
 }
 
 /* ---------- Excel ---------- */

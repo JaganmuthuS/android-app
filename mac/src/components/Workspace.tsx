@@ -1,6 +1,7 @@
 import { diffLines, diffWordsWithSpace, type Change as DiffPart } from 'diff';
-import type { Change, FileTouch, UiState } from '../../shared/types';
-import { laneChanges, useStore } from '../store';
+import { useEffect, useRef } from 'react';
+import type { Change, FileTouch, Source, UiState, WebSearch } from '../../shared/types';
+import { laneChanges, laneSources, useStore } from '../store';
 
 const TABS: { id: UiState['tab']; label: string }[] = [
   { id: 'doc', label: 'Document' },
@@ -13,8 +14,9 @@ export function Workspace() {
   const setTab = useStore((s) => s.setTab);
   const changes = useStore(laneChanges);
   const touches = useStore((s) => s.touches);
+  const { sources, searches } = useStore(laneSources);
   const open = changes.filter((c) => c.status === 'pending').length;
-  const counts: Record<UiState['tab'], string> = { doc: open ? `${open} to review` : '', research: '', files: touches.length ? String(touches.length) : '' };
+  const counts: Record<UiState['tab'], string> = { doc: open ? `${open} to review` : '', research: sources.length ? String(sources.length) : '', files: touches.length ? String(touches.length) : '' };
 
   return (
     <section className="col" aria-label="Workspace">
@@ -26,14 +28,7 @@ export function Workspace() {
         ))}
       </div>
       {tab === 'doc' && <DocumentTab changes={changes} />}
-      {tab === 'research' && (
-        <div className="pane" role="tabpanel" aria-labelledby="tab-research">
-          <div className="empty-state">
-            <h5>No sources yet</h5>
-            <p>Research lanes will list every source Jarvis reads, numbered, with whether it was cited and why. Web research arrives in a later update.</p>
-          </div>
-        </div>
-      )}
+      {tab === 'research' && <ResearchTab sources={sources} searches={searches} />}
       {tab === 'files' && <FilesTab touches={touches} />}
     </section>
   );
@@ -165,6 +160,70 @@ function FilesTab({ touches }: { touches: FileTouch[] }) {
             ))}
           </tbody>
         </table>
+      )}
+    </div>
+  );
+}
+
+const KIND_LABEL: Record<Source['kind'], string> = { official: 'Official', reference: 'Reference', web: 'Web', file: 'Workspace file' };
+const STATE_LABEL: Record<Source['state'], string> = { cited: 'Cited', read: 'Not cited', failed: 'Could not read' };
+
+function ResearchTab({ sources, searches }: { sources: Source[]; searches: WebSearch[] }) {
+  const focused = useStore((s) => s.focusedSource);
+  const webAccess = useStore((s) => s.settings?.webAccess ?? true);
+  const openExternal = useStore((s) => s.openExternal);
+  const list = useRef<HTMLOListElement>(null);
+  useEffect(() => {
+    if (focused != null) list.current?.querySelector(`[data-n="${focused}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [focused, sources.length]);
+  const cited = sources.filter((s) => s.state === 'cited').length;
+
+  return (
+    <div className="pane" role="tabpanel" aria-labelledby="tab-research">
+      {sources.length === 0 && searches.length === 0 ? (
+        <div className="empty-state">
+          <h5>No sources yet</h5>
+          <p>{webAccess
+            ? 'Ask a question that needs current facts, for example “What is the ECB deposit rate now?”. Every page and file Jarvis reads is listed here, numbered, with whether the answer cites it.'
+            : 'Web research is turned off in Settings → Behaviour. Files Jarvis reads are still listed here as sources.'}</p>
+        </div>
+      ) : (
+        <>
+          <div className="pane-head">
+            <h4>Sources</h4>
+            <span className="muted nums" style={{ fontSize: 13 }}>{sources.length} read · {cited} cited</span>
+          </div>
+          <ol className="sources" ref={list}>
+            {sources.map((s) => (
+              <li key={s.id} data-n={s.n} className={`source${focused === s.n ? ' focused' : ''}${s.state === 'failed' ? ' failed' : ''}`}>
+                <span className="source-n nums">{s.n}</span>
+                <div className="source-body">
+                  {s.kind === 'file' || s.state === 'failed'
+                    ? <span className="source-title">{s.title}</span>
+                    : <button type="button" className="plain-btn source-title" title={s.url} onClick={() => openExternal(s.url)}>{s.title}</button>}
+                  <div className="source-meta">
+                    {s.domain}{s.published ? ` · ${s.published}` : ''}
+                  </div>
+                  {s.note && <div className="source-note">{s.note}</div>}
+                </div>
+                <div className="source-tags">
+                  <span className={`tag ${s.state === 'cited' ? 'tag-accent' : s.state === 'failed' ? 'tag-outline' : 'tag-neutral'}`}>{STATE_LABEL[s.state]}</span>
+                  <span className="tag tag-outline">{KIND_LABEL[s.kind]}</span>
+                </div>
+              </li>
+            ))}
+          </ol>
+          {searches.length > 0 && (
+            <>
+              <h6 className="searches-head">Searches</h6>
+              <ul className="searches">
+                {searches.map((q, i) => (
+                  <li key={i}><span>“{q.query}”</span><span className="muted nums">{q.results} result{q.results === 1 ? '' : 's'} · {q.provider} · {new Date(q.ts).toTimeString().slice(0, 5)}</span></li>
+                ))}
+              </ul>
+            </>
+          )}
+        </>
       )}
     </div>
   );

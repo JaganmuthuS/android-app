@@ -39,6 +39,17 @@ export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: nu
       res.end();
     };
 
+    // A tiny stand-in for the web: a DuckDuckGo results page and one article.
+    const host = `http://${req.headers.host}`;
+    if (req.url?.startsWith('/ddg/html/')) {
+      res.setHeader('content-type', 'text/html');
+      return res.end(`<html><body><div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=${encodeURIComponent(`${host}/page/rates`)}&amp;rut=1">Key ECB interest rates</a>
+        <a class="result__snippet">The deposit facility rate is 2.00%.</a></div></body></html>`);
+    }
+    if (req.url === '/page/rates') {
+      res.setHeader('content-type', 'text/html');
+      return res.end('<html><head><title>Key ECB interest rates</title><meta property="article:published_time" content="2026-09-11"></head><body><main><h1>Key ECB interest rates</h1><p>The deposit facility rate is 2.00% from 11 June 2026.</p></main></body></html>');
+    }
     if (req.url === '/api/version') return json({ version: '0.12.0-test' });
     if (req.url === '/api/show') return json({ capabilities: ['completion', 'tools'] });
     if (req.url === '/api/tags') return json({ models: state.installed.map((name) => ({ name, size: 5.2e9, details: { parameter_size: '8.2B' } })) });
@@ -64,6 +75,13 @@ export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: nu
       const say = (text: string) => stream([...(text.match(/\S+\s*/g) ?? [text]).map((w) => ({ message: { role: 'assistant', content: w }, done: false })), { done: true }]);
 
       if (tools && /Use the list_dir tool/.test(last.content)) return call('list_dir', { path: '.' });
+      if (/deposit rate/i.test(request)) {
+        if (format) return say(JSON.stringify({ kind: 'answer', title: 'ECB deposit rate' }));
+        const done = messages.filter((m) => m.role === 'tool');
+        if (done.length === 0) return call('web_search', { query: 'ECB deposit facility rate' });
+        if (done.length === 1) return call('fetch_url', { url: done[0].content.match(/http:\/\/\S+\/page\/rates/)![0] });
+        return say('The ECB deposit facility rate is 2.00% [1], unchanged since June.');
+      }
       if (/workbook/i.test(request)) {
         if (format) return say(JSON.stringify({ kind: 'answer', title: 'Office update' }));
         const done = messages.filter((m) => m.role === 'tool').length;

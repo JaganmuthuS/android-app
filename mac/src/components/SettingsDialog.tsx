@@ -134,6 +134,13 @@ export function SettingsDialog() {
             </select>
             <p className="field-hint">A local model answers one request at a time, so extra lanes wait their turn.</p>
           </div>
+          <div className="field">
+            <label className="toggle-row">
+              <input type="checkbox" checked={settings.webAccess} onChange={(e) => void st.saveSettings({ webAccess: e.target.checked })} />
+              <span>Web research</span>
+            </label>
+            <p className="field-hint">Jarvis searches the web through DuckDuckGo (Wikipedia when that fails) and reads pages to answer with numbered sources. It is free and needs no account. Only search words and page addresses leave this Mac; your files and chats stay here.</p>
+          </div>
         </section>
 
         <section className="settings-section">

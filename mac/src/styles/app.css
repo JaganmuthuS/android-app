@@ -253,3 +253,20 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; background:
 
 .update-pill { font-size: 13px; padding: 7px 12px; white-space: nowrap; }
 .update-notes { white-space: pre-wrap; max-height: 120px; overflow: auto; }
+
+/* ---------- research ---------- */
+.cite { display: inline-block; min-width: 18px; padding: 0 4px; margin: 0 1px; font-size: 11px; font-weight: 700; line-height: 16px; text-align: center; vertical-align: 2px; background: var(--color-text); color: var(--color-bg); font-variant-numeric: tabular-nums; }
+.cite:hover { background: var(--color-accent); }
+.sources { list-style: none; margin: 0; padding: 0; border-top: 2px solid var(--color-text); }
+.source { display: grid; grid-template-columns: 32px 1fr auto; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--color-neutral-300); align-items: start; }
+.source.focused { background: var(--color-surface); box-shadow: inset 4px 0 0 var(--color-accent); }
+.source-n { font-family: var(--font-heading); font-weight: 800; font-size: 18px; text-align: right; line-height: 22px; }
+.source-title { font-weight: 600; text-align: left; line-height: 22px; overflow-wrap: anywhere; }
+button.source-title:hover { text-decoration: underline; text-decoration-color: var(--color-accent); text-underline-offset: 3px; }
+.source-meta { font-size: 12px; color: var(--color-neutral-700); margin-top: 2px; }
+.source-note { font-size: 12px; color: var(--color-neutral-700); margin-top: 4px; font-style: italic; }
+.source.failed .source-note { color: var(--color-accent-800); font-style: normal; }
+.source-tags { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+.searches-head { margin: 24px 0 8px; }
+.searches { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+.searches li { display: flex; justify-content: space-between; gap: 16px; padding: 6px 0; border-bottom: 1px solid var(--color-neutral-300); }

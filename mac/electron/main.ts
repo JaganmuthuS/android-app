@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Notification, safeStorage, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, Notification, safeStorage, screen, shell } from 'electron';
 import { execFile, spawn } from 'child_process';
 import * as os from 'os';
 import * as fs from 'fs';
@@ -8,6 +8,7 @@ import { NEW_LANE_TITLE } from './agent';
 import { Db } from './db';
 import { Ollama } from './ollama';
 import { Workspace } from './workspace';
+import { Research } from './research';
 import { SWAP_SCRIPT, Updater, bundleVersion } from './updater';
 import type { JarvisEvent, ScopeMode, Settings, UiState, UpdateState } from '../shared/types';
 
@@ -22,6 +23,7 @@ let db: Db;
 let agent: Agent;
 let ollama: Ollama;
 let workspace: Workspace;
+let research: Research;
 let updater: Updater;
 let update: UpdateState = { state: 'idle' };
 const setUpdate = (u: UpdateState) => { update = u; emit({ type: 'update', update }); };
@@ -207,6 +209,7 @@ function registerIpc() {
     if (typeof patch.model === 'string' && /^[\w.:/-]{1,100}$/.test(patch.model)) clean.model = patch.model;
     if (['ask_every_change', 'ask_if_risky', 'autonomous'].includes(patch.autonomy as string)) clean.autonomy = patch.autonomy;
     if (Number.isInteger(patch.maxParallel) && patch.maxParallel! >= 1 && patch.maxParallel! <= 4) clean.maxParallel = patch.maxParallel;
+    if (typeof patch.webAccess === 'boolean') clean.webAccess = patch.webAccess;
     const s = db.setSettings(clean);
     emit({ type: 'settings', settings: s });
     return s;
@@ -276,6 +279,7 @@ function registerIpc() {
   handle('checkpoints:list', (id: string) => db.listCheckpoints(str(id)));
   handle('checkpoints:restore', (id: string) => agent.restoreCheckpoint(str(id)));
   handle('touches:list', () => db.listTouches());
+  handle('sources:list', (laneId: string) => ({ sources: db.listSources(str(laneId, 100)), searches: db.listSearches(str(laneId, 100)) }));
   handle('diagnose', async () => {
     const lines = workspace.diagnose();
     const s = db.getSettings();
@@ -303,6 +307,8 @@ function registerIpc() {
         }
       }
     }
+    if (s.webAccess) lines.push(await research.probe());
+    else lines.push({ ok: true, label: 'Web research is off', detail: 'Turn it on in Settings → Behaviour.' });
     return { version: app.getVersion(), lines };
   });
   handle('update:check', () => checkForUpdate());
@@ -345,7 +351,14 @@ app.whenReady().then(() => {
     else emit({ type: 'checkpoints', laneId: what.checkpoints, checkpoints: db.listCheckpoints(what.checkpoints) });
   });
   if (process.env.JARVIS_WORKSPACE && !db.getSettings().workspace) workspace.setRoot(process.env.JARVIS_WORKSPACE);
-  agent = new Agent(db, ollama, emit, notify, workspace);
+  // Chromium's network stack: uses the Mac's proxy settings and certificates.
+  research = new Research(db, emit, {
+    fetch: (url, init) => net.fetch(url, init),
+    searchUrl: process.env.JARVIS_SEARCH_URL,
+    wikipediaUrl: process.env.JARVIS_WIKIPEDIA_URL,
+    allowPrivate: process.env.JARVIS_ALLOW_LOCAL_WEB === '1',
+  });
+  agent = new Agent(db, ollama, emit, notify, workspace, research);
   updater = new Updater({
     current: app.getVersion(),
     arch: process.arch,

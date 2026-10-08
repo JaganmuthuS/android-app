@@ -19,7 +19,7 @@ async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
   const app = await electron.launch({
     ...(packaged ? { executablePath: packaged } : {}),
     args: [...(packaged ? [] : ['.']), `--user-data-dir=${userData}`, '--no-sandbox'],
-    env: { ...process.env, JARVIS_OLLAMA_URL: ollama.url, JARVIS_WORKSPACE: root },
+    env: { ...process.env, JARVIS_OLLAMA_URL: ollama.url, JARVIS_WORKSPACE: root, JARVIS_SEARCH_URL: `${ollama.url}/ddg/html/` },
   });
   const page = await app.firstWindow();
   await page.waitForSelector('.wordmark');
@@ -149,6 +149,7 @@ test('check file access and the waiting-changes banner', async () => {
   await expect(list).toContainText('Finance/: read');
   await expect(list).toContainText('Personal/: no access (by your choice)');
   await expect(list).toContainText('The model actually calls file tools');
+  await expect(list).toContainText('Web search works');
   await expect(list.locator('li.bad')).toHaveCount(0);
   await page.screenshot({ path: 'test-results/phase3-check.png' });
   await page.getByRole('button', { name: 'Done', exact: true }).click();

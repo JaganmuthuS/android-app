@@ -62,7 +62,7 @@ jobs:
           tag_name: mac-v${{ steps.version.outputs.version }}
           name: JARVIS for Mac ${{ steps.version.outputs.version }}
           body: |
-            Phase 4: Word, Excel, PowerPoint and PDF. Jarvis reads all four, edits Word as tracked changes, changes Excel cells while keeping formatting and formulas, and changes PowerPoint text. New: in-app updates (Settings → Updates, or the Update button in the title bar).
+            Phase 5: web research with numbered sources. Jarvis searches the web for free (DuckDuckGo, then Wikipedia), reads pages and online PDFs, and cites them as [1], [2] in its answers. The Research tab lists every source, whether it was cited, and why not. Citations in new Word paragraphs become real footnotes. Lanes can read what other lanes found. Turn web research off in Settings → Behaviour.
             First install: download JARVIS-mac-apple-silicon.dmg (Apple silicon) or JARVIS-mac.dmg (any Mac) and drag JARVIS to Applications. After that, update from inside the app. The .zip files are what the in-app updater downloads.
           files: |
             JARVIS-mac.dmg

@@ -2,7 +2,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'crypto';
 import type {
-  AuditEntry, Autonomy, Change, ChangeStatus, Checkpoint, FileScope, FileTouch, Lane, LaneStatus, Memory, Message, MessageKind, PlanStep, ScopeMode, Settings, StepState, TouchAction,
+  AuditEntry, Autonomy, Source, WebSearch, Change, ChangeStatus, Checkpoint, FileScope, FileTouch, Lane, LaneStatus, Memory, Message, MessageKind, PlanStep, ScopeMode, Settings, StepState, TouchAction,
 } from '../shared/types';
 import { DEFAULT_SETTINGS } from '../shared/types';
 
@@ -44,6 +44,14 @@ CREATE TABLE IF NOT EXISTS checkpoint_files (
 CREATE TABLE IF NOT EXISTS touches (
   lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE, path TEXT NOT NULL,
   action TEXT NOT NULL, format TEXT NOT NULL, ts INTEGER NOT NULL, detail TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS sources (
+  id TEXT PRIMARY KEY, lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE, n INTEGER NOT NULL,
+  url TEXT NOT NULL, title TEXT NOT NULL, domain TEXT NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '', published TEXT, ts INTEGER NOT NULL, UNIQUE (lane_id, url)
+);
+CREATE TABLE IF NOT EXISTS searches (
+  lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE, query TEXT NOT NULL, provider TEXT NOT NULL, results INTEGER NOT NULL, ts INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS audit (ts INTEGER NOT NULL, lane_id TEXT NOT NULL, tool TEXT NOT NULL, path TEXT NOT NULL, result TEXT NOT NULL);
 `;
@@ -256,7 +264,39 @@ export class Db {
     return this.all('SELECT * FROM audit ORDER BY ts, rowid').map((r) => ({ ts: Number(r.ts), laneId: String(r.lane_id), tool: String(r.tool), path: String(r.path), result: String(r.result) }));
   }
 
+  /* ---------- research sources ---------- */
+  private toSource(r: Row): Source {
+    return {
+      id: String(r.id), laneId: String(r.lane_id), n: Number(r.n), url: String(r.url), title: String(r.title), domain: String(r.domain),
+      kind: r.kind as Source['kind'], state: r.state as Source['state'], note: String(r.note), published: r.published == null ? undefined : String(r.published), ts: Number(r.ts),
+    };
+  }
+  listSources(laneId: string): Source[] { return this.all('SELECT * FROM sources WHERE lane_id = ? ORDER BY n', laneId).map((r) => this.toSource(r)); }
+  findSource(laneId: string, url: string): Source | undefined { const r = this.get('SELECT * FROM sources WHERE lane_id = ? AND url = ?', laneId, url); return r && this.toSource(r); }
+  /** Add a source with the lane's next number, or update the one already listed for this address (it keeps its number). */
+  upsertSource(laneId: string, s: Pick<Source, 'url' | 'title' | 'domain' | 'kind' | 'state' | 'note'> & { published?: string }): Source {
+    const prev = this.findSource(laneId, s.url);
+    if (prev) {
+      this.run('UPDATE sources SET title = ?, kind = ?, state = ?, note = ?, published = ?, ts = ? WHERE id = ?', s.title, s.kind, s.state, s.note, s.published ?? prev.published ?? null, Date.now(), prev.id);
+      return this.findSource(laneId, s.url)!;
+    }
+    const n = Number(this.get('SELECT COALESCE(MAX(n), 0) + 1 AS n FROM sources WHERE lane_id = ?', laneId)!.n);
+    this.run('INSERT INTO sources(id, lane_id, n, url, title, domain, kind, state, note, published, ts) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+      randomUUID(), laneId, n, s.url, s.title.slice(0, 300), s.domain, s.kind, s.state, s.note, s.published ?? null, Date.now());
+    return this.findSource(laneId, s.url)!;
+  }
+  updateSource(id: string, patch: { state?: Source['state']; note?: string }) {
+    if (patch.state !== undefined) this.run('UPDATE sources SET state = ? WHERE id = ?', patch.state, id);
+    if (patch.note !== undefined) this.run('UPDATE sources SET note = ? WHERE id = ?', patch.note, id);
+  }
+  addSearch(laneId: string, query: string, provider: string, results: number) {
+    this.run('INSERT INTO searches(lane_id, query, provider, results, ts) VALUES(?,?,?,?,?)', laneId, query, provider, results, Date.now());
+  }
+  listSearches(laneId: string): WebSearch[] {
+    return this.all('SELECT * FROM searches WHERE lane_id = ? ORDER BY ts, rowid', laneId).map((r) => ({ laneId: String(r.lane_id), query: String(r.query), provider: String(r.provider), results: Number(r.results), ts: Number(r.ts) }));
+  }
+
   deleteAll() {
-    this.db.exec('DELETE FROM messages; DELETE FROM plan_steps; DELETE FROM changes; DELETE FROM checkpoint_files; DELETE FROM checkpoints; DELETE FROM touches; DELETE FROM audit; DELETE FROM lanes; DELETE FROM memories; DELETE FROM scopes; DELETE FROM kv;');
+    this.db.exec('DELETE FROM sources; DELETE FROM searches; DELETE FROM messages; DELETE FROM plan_steps; DELETE FROM changes; DELETE FROM checkpoint_files; DELETE FROM checkpoints; DELETE FROM touches; DELETE FROM audit; DELETE FROM lanes; DELETE FROM memories; DELETE FROM scopes; DELETE FROM kv;');
   }
 }

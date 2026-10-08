@@ -20,7 +20,11 @@ export function osDeniedMessage(where: string) {
 }
 
 type Op = 'read' | 'write';
-export interface ToolContext { laneId: string; stepIndex: number | null; autonomy: Autonomy }
+export interface ToolContext {
+  laneId: string; stepIndex: number | null; autonomy: Autonomy;
+  /** Footnote text for citation [n], when the lane has read that source. */
+  footnote?: (n: number) => string | null;
+}
 
 const TEXT_EXT = new Set(['.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '.xml', '.html', '.htm', '.yml', '.yaml', '.log', '.ini', '.toml', '.rtf', '.tex', '.js', '.ts', '.py', '.css', '.sql', '.sh']);
 const LATER_EXT: Record<string, string> = { '.xls': 'old Excel (.xls)', '.ppt': 'old PowerPoint (.ppt)', '.doc': 'old Word (.doc)', '.pages': 'Pages', '.numbers': 'Numbers', '.key': 'Keynote' };
@@ -264,7 +268,7 @@ export class Workspace {
 
   /* ---------- tools ---------- */
 
-  async exec(rawName: string, rawArgs: Record<string, unknown>, ctx: ToolContext): Promise<{ result: string; log?: [string, string] }> {
+  async exec(rawName: string, rawArgs: Record<string, unknown>, ctx: ToolContext): Promise<{ result: string; log?: [string, string]; read?: string }> {
     const name = TOOL_ALIASES[rawName] ?? rawName;
     const args = normaliseArgs(rawArgs ?? {});
     const p = (k: string) => String(args[k] ?? '');
@@ -288,7 +292,7 @@ export class Workspace {
     }
   }
 
-  private async run(name: string, a: Record<string, unknown>, ctx: ToolContext): Promise<{ result: string; log?: [string, string] }> {
+  private async run(name: string, a: Record<string, unknown>, ctx: ToolContext): Promise<{ result: string; log?: [string, string]; read?: string }> {
     const s = (k: string) => (a[k] == null ? '' : String(a[k]));
     switch (name) {
       case 'list_dir': return this.listDir(s('path') || '.');
@@ -354,7 +358,7 @@ export class Workspace {
     this.touch(ctx.laneId, r.rel, 'read');
     const lines = text.split('\n').length;
     const clipped = text.length > MAX_READ ? `${text.slice(0, MAX_READ)}\n[… ${text.length - MAX_READ} more characters not shown]` : text;
-    return { result: clipped, log: ['Read', `${r.rel} · ${lines} line${lines === 1 ? '' : 's'}`] as [string, string] };
+    return { result: clipped, log: ['Read', `${r.rel} · ${lines} line${lines === 1 ? '' : 's'}`] as [string, string], read: r.rel };
   }
 
   private search(query: string, rel: string) {
@@ -424,7 +428,7 @@ export class Workspace {
     const r = this.resolve(rel, 'write');
     if (OFFICE[path.extname(r.abs).toLowerCase()] !== 'docx') throw new WorkspaceError('docx_insert_paragraph only works on Word (.docx) files.');
     const bytes = this.mustBytes(ctx.laneId, r.rel, r.abs);
-    const next = await docxInsertParagraph(bytes, after, text, style || undefined);
+    const next = await docxInsertParagraph(bytes, after, text, style || undefined, ctx.footnote);
     return this.stageBytes(ctx, r.rel, r.scope, bytes, next, await docxText(bytes), await docxText(next), `New paragraph: “${short(text)}” (tracked change)`, reason);
   }
 

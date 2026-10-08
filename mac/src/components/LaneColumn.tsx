@@ -79,7 +79,7 @@ function Chat({ lane }: { lane: Lane }) {
             return (
               <div key={m.id} className="msg-jarvis">
                 <span className="label">{p.step ? `Jarvis · step ${String(p.step)}` : 'Jarvis'}</span>
-                <p>{text}{p.interrupted ? <span className="muted"> (stopped)</span> : null}</p>
+                <p><Cited text={text} />{p.interrupted ? <span className="muted"> (stopped)</span> : null}</p>
               </div>
             );
           }
@@ -296,5 +296,22 @@ function Composer({ lane }: { lane: Lane }) {
       </div>
       <div className="hint">{busy ? 'Jarvis is working. Stop pauses the lane; you can resume it.' : 'Return to send · Shift+Return for a new line'}</div>
     </div>
+  );
+}
+
+/** Reply text with [n] citations as buttons that open the source in the Research tab. */
+function Cited({ text }: { text: string }) {
+  const focusSource = useStore((s) => s.focusSource);
+  const parts = text.split(/(\[\d{1,3}\])/);
+  if (parts.length === 1) return <>{text}</>;
+  return (
+    <>
+      {parts.map((part, i) => {
+        const n = part.match(/^\[(\d{1,3})\]$/)?.[1];
+        return n
+          ? <button key={i} type="button" className="plain-btn cite" aria-label={`Source ${n}`} onClick={() => focusSource(Number(n))}>{n}</button>
+          : <span key={i}>{part}</span>;
+      })}
+    </>
   );
 }

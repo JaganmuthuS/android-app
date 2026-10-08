@@ -2,9 +2,17 @@
 
 A desktop agent for documents, folders and research, built from `CLAUDE_CODE_PROMPT.md` and the `JARVIS Workspace` design.
 
-## Status: Phase 4 of 8
+## Status: Phase 5 of 8
 
-**New in Phase 4: Office files, PDFs and in-app updates**
+**New in Phase 5: web research with numbered sources**
+- **Free web search**: Jarvis searches through DuckDuckGo (falling back to DuckDuckGo Lite, then Wikipedia) and reads pages and online PDFs. No account, no API key, no cost. Only your search words and the page addresses leave the Mac.
+- **Numbered sources**: every page and every workspace file Jarvis reads gets a number in its lane. Answers cite them as **[1]**, **[2]**; click a number in the chat to open that source.
+- **Research tab**: lists each source with its number, site, publication date, kind (Official, Reference, Web, Workspace file) and whether the answer **cited** it. Sources that were read but not cited say so; pages that could not be read say why (login wall, 404, too large…). Every search is listed too, and every search and page read is in the audit log.
+- **Word footnotes**: when Jarvis adds a Word paragraph with [n] citations, they become real Word footnotes (tracked, by JARVIS) naming the source, its address and the date it was read.
+- **Cross-lane reads**: one lane can read what another lane found (its latest answers and sources) with `read_lane`.
+- **Safety**: page text is treated as data, never as instructions; pages on this Mac or the local network are never read; addresses with passwords are refused. Settings → Behaviour → **Web research** turns it all off. **Check file access** now also checks that web search works.
+
+**From Phase 4: Office files, PDFs and in-app updates**
 - **Word (.docx)**: Jarvis reads documents (headings marked) and edits them as real Word **tracked changes** by JARVIS, using the original run formatting. Only the edited paragraph's XML changes; styles and every other paragraph stay byte-for-byte the same. It can also add paragraphs (optionally as a heading) as tracked insertions.
 - **Excel (.xlsx)**: reads every sheet with cell addresses and formulas; changes cells while keeping number formats, fonts and other formulas. Workbooks with charts, pivot tables, slicers or macros are read-only, because saving them would lose those parts. The Document tab shows each changed cell, before and after.
 - **PowerPoint (.pptx)**: reads slides by shape and changes slide text, keeping run formatting.
@@ -26,7 +34,7 @@ A desktop agent for documents, folders and research, built from `CLAUDE_CODE_PRO
 
 **From Phase 2**: lanes, streaming chat, plans you approve or edit, autonomy levels, stop and resume, parallel lanes, memory, settings and notifications.
 
-**Not yet**: Excel, PowerPoint and PDF, Word editing, web research, scheduled jobs and voice.
+**Not yet**: scheduled jobs, notifications for long tasks, the menu bar panel and voice (Phases 6 to 8).
 
 ### First run
 

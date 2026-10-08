@@ -41,6 +41,7 @@ const api: JarvisApi = {
   listCheckpoints: call('checkpoints:list') as JarvisApi['listCheckpoints'],
   restoreCheckpoint: call('checkpoints:restore') as JarvisApi['restoreCheckpoint'],
   listTouches: call('touches:list') as JarvisApi['listTouches'],
+  listSources: call('sources:list') as JarvisApi['listSources'],
   exportAudit: call('audit:export') as JarvisApi['exportAudit'],
   diagnose: call('diagnose') as JarvisApi['diagnose'],
   openPrivacySettings: call('open:privacy') as JarvisApi['openPrivacySettings'],

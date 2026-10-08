@@ -3,15 +3,24 @@ import type { Db } from './db';
 import type { ChatMessage, Ollama } from './ollama';
 import { OllamaError } from './ollama';
 import {
-  MAX_TOOL_ROUNDS, PLAN_INTRO, PLAN_INTRO_AUTO, SUMMARY_INSTRUCTION, TOOLS, TRIAGE_INSTRUCTION, TRIAGE_SCHEMA,
+  LANE_TOOL, MAX_TOOL_ROUNDS, PLAN_INTRO, PLAN_INTRO_AUTO, SUMMARY_INSTRUCTION, TOOLS, TRIAGE_INSTRUCTION, TRIAGE_SCHEMA, WEB_TOOLS,
   parseTriage, stepInstruction, systemPrompt, workspaceSummary,
 } from './prompts';
+import type { Research } from './research';
 import { OsPermissionError, ScopeError, type Workspace } from './workspace';
 import type { JarvisEvent, Lane, LaneStatus, Message, PlanStep } from '../shared/types';
 
 export const NEW_LANE_TITLE = 'New lane';
 const HISTORY_LIMIT = 24;
 const BUSY: LaneStatus[] = ['planning', 'running'];
+
+/** Other names local models use for the web and lane tools. */
+const AGENT_TOOL_ALIASES: Record<string, string> = {
+  search_web: 'web_search', websearch: 'web_search', internet_search: 'web_search', google: 'web_search', google_search: 'web_search', duckduckgo_search: 'web_search', search_internet: 'web_search',
+  fetch: 'fetch_url', open_url: 'fetch_url', get_url: 'fetch_url', read_url: 'fetch_url', fetch_page: 'fetch_url', browse: 'fetch_url', browse_url: 'fetch_url', visit: 'fetch_url', web_fetch: 'fetch_url', read_webpage: 'fetch_url',
+  read_lane_output: 'read_lane', lane_output: 'read_lane',
+};
+const WRITE_TOOLS = new Set(['write_file', 'replace_text', 'docx_insert_paragraph', 'xlsx_write_cells']);
 
 export class LaneBusyError extends Error {}
 
@@ -27,6 +36,7 @@ export class Agent {
     private emit: (e: JarvisEvent) => void,
     private notify: (title: string, body: string) => void = () => {},
     private workspace: Workspace | null = null,
+    private research: Research | null = null,
   ) {}
 
   /** After a crash or quit, nothing is mid-run any more. */
@@ -142,6 +152,7 @@ export class Agent {
 
     if (t.kind === 'answer') {
       await this.respond(laneId, [{ role: 'system', content: this.system(laneId) }, ...history], signal, null);
+      this.research?.settle(laneId);
       const open = this.pendingChanges(laneId);
       if (open) this.setStatus(laneId, 'awaiting_review', reviewText(open), 0);
       else this.setStatus(laneId, 'idle', 'Answered', 0);
@@ -168,6 +179,7 @@ export class Agent {
       const next = steps.find((s) => s.state === 'queued' || s.state === 'running');
       if (!next) {
         await this.respond(laneId, [...this.context(laneId), { role: 'user', content: SUMMARY_INSTRUCTION }], signal, null, false);
+        this.research?.settle(laneId);
         const open = this.pendingChanges(laneId);
         if (open) {
           this.setStatus(laneId, 'awaiting_review', reviewText(open), 1);
@@ -217,7 +229,8 @@ export class Agent {
    */
   private async respond(laneId: string, messages: ChatMessage[], signal: AbortSignal, stepIndex: number | null, useTools = true, extra: Record<string, unknown> = {}) {
     const msg = this.addMessage(laneId, 'jarvis', 'text', { text: '', streaming: true, ...extra });
-    const tools = useTools && this.workspace?.root() ? TOOLS : undefined;
+    const available = useTools ? this.tools(laneId) : [];
+    const tools = available.length ? available : undefined;
     const convo = [...messages];
     let last = 0;
     let latest = '';
@@ -247,10 +260,11 @@ export class Agent {
           const args = (typeof call.function.arguments === 'string' ? safeJson(call.function.arguments) : call.function.arguments) ?? {};
           let result: string;
           try {
-            const out = await this.workspace!.exec(name, args, { laneId, stepIndex, autonomy: this.mustLane(laneId).autonomy });
+            const out = await this.exec(laneId, name, args, stepIndex, signal);
             result = out.result;
             if (out.log) this.addMessage(laneId, 'system', 'log', { verb: out.log[0], what: out.log[1] });
           } catch (e) {
+            if ((e as Error).name === 'AbortError' && signal.aborted) throw e;
             result = `ERROR: ${(e as Error).message}`;
             if (e instanceof ScopeError && !deniedScopes.has(e.scopePath)) {
               deniedScopes.add(e.scopePath);
@@ -267,6 +281,7 @@ export class Agent {
         latest = '';
       }
       this.db.updateMessage(msg.id, { text: latest || '(no reply)', ...extra });
+      this.markCited(laneId, latest);
     } catch (e) {
       this.db.updateMessage(msg.id, { text: latest ? `${latest} …` : '', ...extra, interrupted: true });
       throw e;
@@ -274,6 +289,83 @@ export class Agent {
       this.emit({ type: 'messages', laneId, messages: this.db.listMessages(laneId) });
     }
   }
+
+  /** The tools the model gets in this lane: files when a workspace is set, the web when allowed, other lanes when there are any. */
+  private tools(laneId: string) {
+    return [
+      ...(this.workspace?.root() ? TOOLS : []),
+      ...(this.research?.enabled() ? WEB_TOOLS : []),
+      ...(this.otherLanes(laneId).length ? [LANE_TOOL] : []),
+    ];
+  }
+
+  private async exec(laneId: string, rawName: string, args: Record<string, unknown>, stepIndex: number | null, signal: AbortSignal): Promise<{ result: string; log?: [string, string] }> {
+    const name = AGENT_TOOL_ALIASES[rawName] ?? rawName;
+    const str = (...keys: string[]) => String(keys.map((k) => args[k]).find((v) => v != null && v !== '') ?? '');
+    if (name === 'web_search' || name === 'fetch_url') {
+      if (!this.research) throw new LaneBusyError('Web research is not available.');
+      if (name === 'web_search') {
+        const q = str('query', 'q', 'search', 'text', 'keywords');
+        const out = await this.research.search(laneId, q, signal);
+        return { result: out.result, log: ['Searched', `“${q}” · ${out.count} result${out.count === 1 ? '' : 's'} (${out.provider})`] };
+      }
+      const { result, source } = await this.research.fetchPage(laneId, str('url', 'link', 'href', 'address', 'page'), Number(args.offset ?? 0), signal);
+      return { result, log: ['Read', `[${source.n}] ${source.title} · ${source.domain}`] };
+    }
+    if (name === 'read_lane') return this.readLane(laneId, str('lane', 'title', 'name', 'lane_title'));
+    if (!this.workspace?.root()) throw new LaneBusyError('No workspace folder is chosen, so files cannot be used. Ask the user to choose one with "Workspace" in the title bar.');
+    const out = await this.workspace.exec(name, args, {
+      laneId, stepIndex, autonomy: this.mustLane(laneId).autonomy,
+      footnote: (n) => this.research?.sourceText(laneId, n) ?? null,
+    });
+    if (out.read) {
+      // A file Jarvis read is a source too, so answers can cite it.
+      const prev = this.db.findSource(laneId, `file:${out.read}`);
+      const src = this.db.upsertSource(laneId, { url: `file:${out.read}`, title: out.read, domain: 'Workspace', kind: 'file', state: prev?.state === 'cited' ? 'cited' : 'read', note: '' });
+      this.emitSources(laneId);
+      return { result: `Source [${src.n}]: workspace file ${out.read}. Cite it as [${src.n}].\n\n${out.result}`, log: out.log };
+    }
+    if (WRITE_TOOLS.has(name)) this.markCited(laneId, JSON.stringify(args));
+    return out;
+  }
+
+  private readLane(laneId: string, query: string): { result: string; log: [string, string] } {
+    const q = query.trim().toLowerCase();
+    const others = this.otherLaneObjects(laneId);
+    if (!q) throw new LaneBusyError(`read_lane needs a "lane" title. Open lanes: ${others.map((l) => `"${l.title}"`).join(', ') || 'none'}.`);
+    const words = q.split(/\s+/);
+    const score = (t: string) => (t.toLowerCase() === q ? 100 : t.toLowerCase().includes(q) ? 50 : words.filter((w) => t.toLowerCase().includes(w)).length);
+    const best = others.map((l) => ({ l, s: score(l.title) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s)[0]?.l;
+    if (!best) throw new LaneBusyError(`No other lane is called "${query}". Open lanes: ${others.map((l) => `"${l.title}"`).join(', ') || 'none'}.`);
+    const answers = this.db.listMessages(best.id)
+      .filter((m) => m.role === 'jarvis' && m.kind === 'text' && String(m.payload.text ?? '').trim() && !m.payload.streaming)
+      .slice(-3)
+      .map((m) => String(m.payload.text).slice(0, 2000));
+    const sources = this.db.listSources(best.id).filter((x) => x.state !== 'failed');
+    const text = [
+      `Lane "${best.title}" (${best.statusText || best.status}).`,
+      answers.length ? `Its latest answers:\n${answers.map((a) => `---\n${a}`).join('\n')}` : 'It has no answers yet.',
+      sources.length ? `Its sources (numbers belong to that lane; read a page with fetch_url to cite it here):\n${sources.map((x) => `[${x.n}] ${x.title} ${x.kind === 'file' ? `(workspace file ${x.url.slice(5)})` : x.url}`).join('\n')}` : '',
+    ].filter(Boolean).join('\n\n');
+    return { result: text, log: ['Read', `lane “${best.title}”`] };
+  }
+
+  private markCited(laneId: string, text: string) {
+    const nums = new Set([...text.matchAll(/\[(\d{1,3})\]/g)].map((m) => Number(m[1])));
+    if (!nums.size) return;
+    let changed = false;
+    for (const s of this.db.listSources(laneId)) {
+      if (nums.has(s.n) && s.state === 'read') { this.db.updateSource(s.id, { state: 'cited', note: '' }); changed = true; }
+    }
+    if (changed) this.emitSources(laneId);
+  }
+
+  private emitSources(laneId: string) {
+    this.emit({ type: 'sources', laneId, sources: this.db.listSources(laneId), searches: this.db.listSearches(laneId) });
+  }
+
+  private otherLaneObjects(laneId: string) { return this.db.listLanes().filter((l) => l.id !== laneId && l.title !== NEW_LANE_TITLE); }
+  private otherLanes(laneId: string) { return this.otherLaneObjects(laneId).map((l) => l.title); }
 
   /* ---------- helpers ---------- */
 
@@ -320,7 +412,7 @@ export class Agent {
     if (root && this.workspace!.osBlocked) ws += '\nmacOS is currently blocking JARVIS from this folder, so file tools will fail. Tell the user to allow JARVIS in System Settings → Privacy & Security → Files and Folders.';
     else if (root) ws += `\n${this.workspace!.overview()}`;
     const attached = laneId ? this.attachments.get(laneId) : '';
-    return systemPrompt(this.db.listMemories(), new Date(), [ws, attached].filter(Boolean).join('\n\n'));
+    return systemPrompt(this.db.listMemories(), new Date(), [ws, attached].filter(Boolean).join('\n\n'), !!this.research?.enabled(), laneId ? this.otherLanes(laneId) : []);
   }
 
   /** The conversation as the model sees it: user requests and Jarvis replies. */
