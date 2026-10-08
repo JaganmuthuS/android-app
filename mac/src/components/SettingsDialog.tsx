@@ -135,6 +135,15 @@ export function SettingsDialog() {
             <p className="field-hint">A local model answers one request at a time, so extra lanes wait their turn.</p>
           </div>
           <div className="field">
+            <label id="set-thinking">Thinking</label>
+            <div className="seg autonomy-seg" role="radiogroup" aria-labelledby="set-thinking">
+              {([['off', 'Off'], ['auto', 'For documents'], ['on', 'Always']] as const).map(([value, label]) => (
+                <button key={value} type="button" role="radio" aria-checked={settings.thinking === value} className="seg-opt" onClick={() => void st.saveSettings({ thinking: value })}>{label}</button>
+              ))}
+            </div>
+            <p className="field-hint">The model reasons before it acts, which makes document edits far more reliable but takes longer. “For documents” thinks for file work and plan steps, and answers quick questions at once. Open “Reasoning” under a reply to see it.</p>
+          </div>
+          <div className="field">
             <label className="toggle-row">
               <input type="checkbox" checked={settings.webAccess} onChange={(e) => void st.saveSettings({ webAccess: e.target.checked })} />
               <span>Web research</span>

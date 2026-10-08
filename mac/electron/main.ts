@@ -93,6 +93,16 @@ function visibleBounds(b: Bounds): Bounds {
   return onScreen ? b : { width: b.width, height: b.height };
 }
 
+let lastWarm = 0;
+/** Keep the model loaded so the first answer doesn't wait for it: at launch, when JARVIS comes to the front, after a download. */
+async function warmModel(force = false) {
+  if (!force && Date.now() - lastWarm < 10 * 60 * 1000) return;
+  lastWarm = Date.now();
+  const model = db.getSettings().model;
+  const status = await ollama.status(model);
+  if (status.reachable && status.modelInstalled) await ollama.warm(model);
+}
+
 function createWindow() {
   const saved = db.getKv<WindowState>('window', { bounds: DEFAULT_BOUNDS, maximized: false });
   const bounds = visibleBounds(saved.bounds);
@@ -210,14 +220,17 @@ function registerIpc() {
     if (['ask_every_change', 'ask_if_risky', 'autonomous'].includes(patch.autonomy as string)) clean.autonomy = patch.autonomy;
     if (Number.isInteger(patch.maxParallel) && patch.maxParallel! >= 1 && patch.maxParallel! <= 4) clean.maxParallel = patch.maxParallel;
     if (typeof patch.webAccess === 'boolean') clean.webAccess = patch.webAccess;
+    if (['auto', 'on', 'off'].includes(patch.thinking as string)) clean.thinking = patch.thinking;
+    const modelChanged = clean.model && clean.model !== db.getSettings().model;
     const s = db.setSettings(clean);
     emit({ type: 'settings', settings: s });
+    if (modelChanged) void warmModel(true);
     return s;
   });
   handle('engine:status', () => ollama.status(db.getSettings().model));
   handle('engine:pull', (model: string) => {
     const m = str(model, 100);
-    void ollama.pull(m, (progress) => emit({ type: 'pull', progress }))
+    void ollama.pull(m, (progress) => { emit({ type: 'pull', progress }); if (progress.done && !progress.error) void warmModel(true); })
       .catch((e) => emit({ type: 'pull', progress: { model: m, status: '', done: true, error: (e as Error).message || 'Download failed.' } }));
   });
 
@@ -372,6 +385,8 @@ app.whenReady().then(() => {
   agent.recover();
   registerIpc();
   createWindow();
+  void warmModel(true);
+  app.on('browser-window-focus', () => { void warmModel(); });
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 

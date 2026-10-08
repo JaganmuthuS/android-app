@@ -165,7 +165,6 @@ describe('agent with tools', () => {
     const model = {
       async chat() { return JSON.stringify({ kind: 'answer', title: 'Update revenue' }); },
       async round(o: { messages: ChatMessage[]; format?: object; tools?: unknown[]; onText?: (t: string) => void }) {
-        if (o.format) return { content: JSON.stringify({ kind: 'answer', title: 'Update revenue' }), toolCalls: [] };
         seen.push(o.messages);
         const next = script.shift();
         if (next && o.tools) return { content: '', toolCalls: next };
@@ -307,7 +306,6 @@ describe('agent context', () => {
     const model = {
       async chat() { return JSON.stringify({ kind: 'answer', title: 'x' }); },
       async round(o: { messages: ChatMessage[]; format?: object; onText?: (t: string) => void }) {
-        if (o.format) return { content: JSON.stringify({ kind: 'answer', title: 'x' }), toolCalls: [] };
         system = o.messages[0].content;
         o.onText?.('ok');
         return { content: 'ok', toolCalls: [] };
@@ -349,6 +347,28 @@ describe('Office files', () => {
     expect(sha('Board/Q3.docx')).toBe(original);
   });
 
+  it('edits Word paragraphs by number, twice, and creates new Word documents', async () => {
+    const { makeDocx } = await import('./fixtures');
+    fs.writeFileSync(path.join(root, 'Board/Q3.docx'), await makeDocx());
+    const read = (await ws.exec('read_file', { path: 'Board/Q3.docx' }, ctx())).result;
+    expect(read).toContain('¶2 Net revenue was €4.61M');
+    await ws.exec('docx_edit_paragraph', { path: 'Board/Q3.docx', paragraph: 2, content: 'Net revenue was €4.82M, 3.1% above the June forecast.', reason: 'Sept close' }, ctx());
+    await ws.exec('edit_paragraph', { file: 'Board/Q3.docx', paragraph_number: '¶2', text: 'Group net revenue was €4.82M, 3.1% above the June forecast.', reason: 'Wording' }, ctx());
+    const [c] = db.listChanges(laneId);
+    expect(c.after).toContain('Group net revenue was €4.82M, 3.1% above the June forecast.');
+    expect(c.title).toMatch(/^¶2 rewritten/);
+
+    await ws.exec('write_file', { path: 'Board/Memo.docx', content: '# Memo\nRevenue rose.\n- One\n- Two', reason: 'Asked for a memo' }, ctx());
+    const memo = db.listChanges(laneId).find((x) => x.filePath === 'Board/Memo.docx')!;
+    expect(memo).toMatchObject({ kind: 'create', title: 'New Word document Memo.docx' });
+    expect(memo.after).toContain('[Title] Memo');
+    expect(fs.existsSync(path.join(root, 'Board/Memo.docx'))).toBe(false);
+    await ws.decide(memo.id, 'accept');
+    expect((await ws.exec('read_file', { path: 'Board/Memo.docx' }, ctx())).result).toContain('¶2 Revenue rose.');
+    await ws.decide(memo.id, 'undo');
+    expect(fs.existsSync(path.join(root, 'Board/Memo.docx'))).toBe(false);
+  });
+
   it('changes Excel cells and records each cell for review', async () => {
     const { makeXlsx } = await import('./fixtures');
     fs.writeFileSync(path.join(root, 'Board/close.xlsx'), await makeXlsx());
@@ -372,7 +392,7 @@ describe('Office files', () => {
     expect((await ws.exec('read_file', { path: 'Finance/memo.pdf' }, ctx())).result).toContain('transparency duties only');
     await ws.exec('replace_text', { path: 'Board/deck.pptx', find: '€4.61M', replace: '€4.82M', reason: 'r' }, ctx('autonomous'));
     expect((await ws.exec('read_file', { path: 'Board/deck.pptx' }, ctx())).result).toContain('Revenue €4.82M');
-    await expect(ws.exec('write_file', { path: 'Board/Q3.docx', content: 'x', reason: 'r' }, ctx())).rejects.toThrow(/use replace_text or docx_insert_paragraph/);
+    await expect(ws.exec('write_file', { path: 'Board/Q3.docx', content: 'x', reason: 'r' }, ctx())).rejects.toThrow(/already exists\. Change it with docx_edit_paragraph/);
     db.setScope('Finance', 'edit_auto');
     await expect(ws.exec('replace_text', { path: 'Finance/memo.pdf', find: 'a', replace: 'b', reason: 'r' }, ctx())).rejects.toThrow(/PDFs can be read but not edited/);
   });

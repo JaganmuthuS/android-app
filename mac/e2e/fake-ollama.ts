@@ -2,7 +2,7 @@
 import * as http from 'http';
 import type { AddressInfo } from 'net';
 
-export interface FakeOllama { url: string; installed: string[]; close(): Promise<void> }
+export interface FakeOllama { url: string; installed: string[]; chats: { think: boolean; keepAlive?: string; messages: number }[]; close(): Promise<void> }
 
 const PLAN = {
   kind: 'plan', title: 'Board summary', scope: 'Finance (read) · Board (write)',
@@ -23,7 +23,7 @@ const FILE_PLAN = {
 };
 
 export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: number } = {}): Promise<FakeOllama> {
-  const state = { installed: opts.installed ?? [] };
+  const state = { installed: opts.installed ?? [], chats: [] as FakeOllama['chats'] };
   const chunkMs = opts.chunkMs ?? 15;
 
   const server = http.createServer(async (req, res) => {
@@ -66,8 +66,11 @@ export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: nu
       return;
     }
     if (req.url === '/api/chat') {
-      const { model, messages, format, tools } = JSON.parse(body) as { model: string; messages: { role: string; content: string }[]; format?: object; tools?: unknown[] };
+      const { model, messages, tools } = JSON.parse(body) as { model: string; messages: { role: string; content: string }[]; tools?: { function: { name: string } }[] };
+      const canPlan = !!tools?.some((t) => t.function.name === 'propose_plan');
       if (!state.installed.includes(model)) { res.statusCode = 404; return json({ error: `model "${model}" not found` }); }
+      state.chats.push({ think: !!(JSON.parse(body) as { think?: boolean }).think, keepAlive: (JSON.parse(body) as { keep_alive?: string }).keep_alive, messages: messages.length });
+      if (!messages.length) return json({ model, done: true, done_reason: 'load' }); // loading the model ahead of time
       const users = messages.filter((m) => m.role === 'user').map((m) => m.content);
       const last = messages.at(-1)!;
       const request = users.filter((u) => !u.startsWith('Decide how') && !u.startsWith('Carry out') && !u.startsWith('All steps')).at(-1) ?? '';
@@ -75,26 +78,36 @@ export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: nu
       const say = (text: string) => stream([...(text.match(/\S+\s*/g) ?? [text]).map((w) => ({ message: { role: 'assistant', content: w }, done: false })), { done: true }]);
 
       if (tools && /Use the list_dir tool/.test(last.content)) return call('list_dir', { path: '.' });
+      const thinks = !!(JSON.parse(body) as { think?: boolean }).think;
+      if (/Q3\.docx|memo\.docx/i.test(request)) {
+        const done = messages.filter((m) => m.role === 'tool');
+        const thought = (t: string) => ({ message: { role: 'assistant', content: '', thinking: t }, done: false });
+        const callWith = (pre: object[], name: string, args: object) => stream([...pre, { message: { role: 'assistant', content: '', tool_calls: [{ function: { name, arguments: args } }] }, done: false }, { done: true }]);
+        const why = thinks ? [thought('Paragraph 2 holds the revenue sentence. '), thought('I will rewrite it with the September figure.')] : [];
+        if (/memo\.docx/i.test(request)) {
+          if (!done.length) return callWith(why, 'write_file', { path: 'Board/Memo.docx', content: '# Board memo\nRevenue rose **3.1%**.\n- Costs flat', reason: 'You asked for a memo' });
+          return say('Board/Memo.docx is ready for your review.');
+        }
+        if (!done.length) return callWith(why, 'read_file', { path: 'Board/Q3.docx' });
+        if (done.length === 1) return call('docx_edit_paragraph', { path: 'Board/Q3.docx', paragraph: 2, content: 'Net revenue was €4.82M, 3.1% above the June forecast.', reason: 'Sept close, row 2' });
+        return say('Paragraph 2 now has the September figures, as a tracked change.');
+      }
       if (/deposit rate/i.test(request)) {
-        if (format) return say(JSON.stringify({ kind: 'answer', title: 'ECB deposit rate' }));
         const done = messages.filter((m) => m.role === 'tool');
         if (done.length === 0) return call('web_search', { query: 'ECB deposit facility rate' });
         if (done.length === 1) return call('fetch_url', { url: done[0].content.match(/http:\/\/\S+\/page\/rates/)![0] });
         return say('The ECB deposit facility rate is 2.00% [1], unchanged since June.');
       }
       if (/workbook/i.test(request)) {
-        if (format) return say(JSON.stringify({ kind: 'answer', title: 'Office update' }));
         const done = messages.filter((m) => m.role === 'tool').length;
         if (done === 0) return call('xlsx_write_cells', { path: 'Board/close.xlsx', sheet: 'Summary', cells: { B2: 4.82 }, reason: 'September close' });
         if (done === 1) return call('replace_text', { path: 'Board/Q3.docx', find: 'slightly ahead of', replace: '3.1% above', reason: 'Exact figures' });
         if (done === 2) return call('read_file', { path: 'Board/memo.pdf' });
         return say('Both files are updated and waiting for your review.');
       }
-      if (format) {
-        if (/diary/i.test(request)) return say(JSON.stringify({ kind: 'answer', title: 'Diary question' }));
-        if (/folder/i.test(request)) return say(JSON.stringify({ kind: 'answer', title: 'New folders' }));
-        if (/revenue/i.test(request)) return say(JSON.stringify(FILE_PLAN));
-        return say(JSON.stringify(/report|summary|board/i.test(request) ? PLAN : { kind: 'answer', title: 'Quick question' }));
+      if (canPlan && last.role === 'user' && !/diary|folder/i.test(request)) {
+        const plan = /revenue/i.test(request) ? FILE_PLAN : /report|summary|board/i.test(request) ? PLAN : null;
+        if (plan) return call('propose_plan', { title: plan.title, scope: plan.scope, steps: plan.steps.map((st) => st.text) });
       }
       if (last.role === 'tool') {
         if (last.content.startsWith('ERROR')) return say('I could not open that file: Jarvis has no access to it.');
@@ -122,6 +135,7 @@ export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: nu
   return {
     url: `http://127.0.0.1:${port}`,
     installed: state.installed,
+    chats: state.chats,
     close: () => new Promise((r) => { server.closeAllConnections(); server.close(() => r()); }),
   };
 }

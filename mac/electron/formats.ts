@@ -3,6 +3,7 @@
 // the file (styles, numbering, images) stays byte-for-byte the same.
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
+import { changeBlocks } from '../shared/diff';
 
 export class FormatError extends Error {}
 
@@ -28,22 +29,28 @@ const RUN = /<w:r\b[^>]*>[\s\S]*?<\/w:r>/g;
 
 /** Text of a Word paragraph as a reader sees it (deleted text excluded). */
 function paraText(p: string) {
-  const withoutDeleted = p.replace(/<w:del\b[\s\S]*?<\/w:del>/g, '');
-  return decode((withoutDeleted.match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>|<w:tab\/>|<w:br\/>/g) ?? [])
-    .map((t) => (t === '<w:tab/>' ? '\t' : t === '<w:br/>' ? '\n' : t.replace(/<[^>]+>/g, ''))).join(''));
+  const withoutDeleted = p.replace(/<w:del\b[^>]*[^/]>[\s\S]*?<\/w:del>/g, '');
+  return decode((withoutDeleted.match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>|<w:tab\/>|<w:br\/>|<w:cr\/>/g) ?? [])
+    .map((t) => (t === '<w:tab/>' ? '\t' : t === '<w:br/>' || t === '<w:cr/>' ? '\n' : t.replace(/<[^>]+>/g, ''))).join(''));
 }
 
-export async function docxText(bytes: Buffer): Promise<string> {
+/**
+ * The document as text. With `numbered`, every paragraph starts with its number (¶12), which
+ * docx_edit_paragraph and docx_insert_paragraph use: far easier for a model than copying text exactly.
+ */
+export async function docxText(bytes: Buffer, numbered = false): Promise<string> {
   const zip = await loadZip(bytes);
   const xml = await zip.file('word/document.xml')?.async('string');
   if (!xml) throw new FormatError('This Word file has no document body.');
   // Footnote references show as [^id], so a reader (and the change view) can see where they sit.
   const withRefs = (p: string) => p.replace(/<w:footnoteReference\b[^>]*w:id="(\d+)"[^>]*\/>/g, '<w:t>[^$1]</w:t>');
-  const body = (xml.match(PARA) ?? []).map((p) => {
+  const lines = (xml.match(PARA) ?? []).map((p, i) => {
     const style = p.match(/<w:pStyle w:val="([^"]+)"/)?.[1];
     const text = paraText(withRefs(p));
-    return style && /^Heading|^Title/i.test(style) && text ? `[${style}] ${text}` : text;
-  }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    const shown = style && /^Heading|^Title/i.test(style) && text ? `[${style}] ${text}` : text;
+    return numbered ? (text.trim() ? `¶${i + 1} ${shown}` : '') : shown;
+  });
+  const body = (numbered ? lines.filter(Boolean).join('\n') : lines.join('\n')).replace(/\n{3,}/g, '\n\n').trim();
   const notesXml = await zip.file('word/footnotes.xml')?.async('string');
   const notes = notesXml ? [...notesXml.matchAll(/<w:footnote\b([^>]*)>([\s\S]*?)<\/w:footnote>/g)]
     .filter((m) => !/w:type=/.test(m[1]))
@@ -54,110 +61,322 @@ export async function docxText(bytes: Buffer): Promise<string> {
 let revisionId = 9000;
 const stamp = () => `w:id="${++revisionId}" w:author="JARVIS" w:date="${new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')}"`;
 
-interface RunInfo { xml: string; start: number; end: number; text: string; rPr: string; plain: boolean }
+/* ----- paragraphs as items: runs (plain text or atomic, like a tab or an image) and zero-width markup ----- */
+
+interface Item { xml: string; text: string; kind: 'plain' | 'atomic' | 'mark'; rPr: string; open: string; start: number }
+
+const RUN_TEXT = /<w:t\b[^>]*>[\s\S]*?<\/w:t>|<w:tab\/>|<w:br\/>|<w:cr\/>/g;
+const runText = (body: string) => decode((body.match(RUN_TEXT) ?? [])
+  .map((t) => (t === '<w:tab/>' ? '\t' : t === '<w:br/>' || t === '<w:cr/>' ? '\n' : t.replace(/<[^>]+>/g, ''))).join(''));
+
+function splitPara(p: string): { head: string; pPr: string; items: Item[]; tail: string } {
+  const open = p.match(/^<w:p\b[^>]*>/)?.[0] ?? '<w:p>';
+  if (/\/>$/.test(open) && p === open) return { head: '<w:p>', pPr: '', items: [], tail: '</w:p>' };
+  let inner = p.slice(open.length, p.length - '</w:p>'.length);
+  const pPr = inner.match(/^\s*<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? '';
+  inner = inner.slice(pPr.length);
+  const items: Item[] = [];
+  let pos = 0;
+  const re = /<w:r\b[^>]*\/>|<w:r\b[^>]*>[\s\S]*?<\/w:r>|<[^>]+>|[^<]+/g;
+  for (const m of inner.matchAll(re)) {
+    const xml = m[0];
+    if (/^<w:r\b/.test(xml) && !/^<w:r\b[^>]*\/>$/.test(xml)) {
+      const rOpen = xml.match(/^<w:r\b[^>]*>/)![0];
+      const rPr = xml.match(/<w:rPr>[\s\S]*?<\/w:rPr>/)?.[0] ?? '';
+      const body = xml.slice(rOpen.length, xml.length - 6).replace(rPr, '');
+      const text = runText(body);
+      const plain = /^(\s*<w:t\b[^>]*>[\s\S]*?<\/w:t>\s*)+$/.test(body);
+      items.push({ xml, text, kind: plain ? 'plain' : text ? 'atomic' : 'mark', rPr, open: rOpen, start: pos });
+      pos += text.length;
+    } else {
+      items.push({ xml, text: '', kind: 'mark', rPr: '', open: '', start: pos });
+    }
+  }
+  return { head: open, pPr, items, tail: '</w:p>' };
+}
+
+const W_T = (t: string) => `<w:t xml:space="preserve">${encode(t)}</w:t>`;
+
+/** A paragraph's own tracked changes by JARVIS are undone, giving the text as it is in the file on disk. */
+function withoutOwnRevisions(p: string): string {
+  return p
+    .replace(/<w:ins\b(?=[^>]*w:author="JARVIS")[^>]*[^/]>[\s\S]*?<\/w:ins>/g, '')
+    .replace(/<w:del\b(?=[^>]*w:author="JARVIS")[^>]*[^/]>([\s\S]*?)<\/w:del>/g, (_, inner: string) => inner
+      .replace(/<w:delText\b/g, '<w:t').replace(/<\/w:delText>/g, '</w:t>')
+      .replace(/<w:delInstrText\b/g, '<w:instrText').replace(/<\/w:delInstrText>/g, '</w:instrText>'))
+    .replace(/<w:del\b(?=[^>]*w:author="JARVIS")[^>]*\/>/g, '');
+}
+
+function assertOnlyOwnRevisions(p: string) {
+  for (const m of p.matchAll(/<w:(ins|del|moveFrom|moveTo)\b[^>]*>/g)) {
+    if (!/w:author="JARVIS"/.test(m[0])) throw new FormatError('This paragraph has tracked changes by someone else. Accept or reject them in Word first.');
+  }
+}
+
+/**
+ * Rewrite one paragraph to `target` as tracked changes: a word-level diff against the paragraph as it is
+ * on disk, keeping the formatting of the words around each change. Earlier JARVIS edits to the same
+ * paragraph (still waiting for review) are folded in, so a paragraph can be edited more than once.
+ */
+function rewriteParagraph(p: string, target: string, deleteMark = false): string {
+  assertOnlyOwnRevisions(p);
+  if (/txbxContent/.test(p)) throw new FormatError('This paragraph holds a text box. Edit the text box text in Word.');
+  const base = withoutOwnRevisions(p);
+  const { head, pPr: pPrRaw, items, tail } = splitPara(base);
+  const original = items.map((i) => i.text).join('');
+  const insertedByUs = /<w:rPr>[\s\S]*?<w:ins\b[^>]*w:author="JARVIS"[^>]*\/>[\s\S]*?<\/w:rPr>/.test(pPrRaw);
+  if (deleteMark && insertedByUs) return ''; // a paragraph JARVIS added and now removes simply goes
+  let pPr = pPrRaw;
+  if (deleteMark) {
+    const mark = `<w:del ${stamp()}/>`;
+    pPr = !pPr ? `<w:pPr><w:rPr>${mark}</w:rPr></w:pPr>` : /<w:rPr>/.test(pPr) ? pPr.replace(/<w:rPr>/, `<w:rPr>${mark}`) : pPr.replace('</w:pPr>', `<w:rPr>${mark}</w:rPr></w:pPr>`);
+  }
+  if (original === target && !deleteMark) return base;
+
+  const at = (pos: number) => items.filter((i) => i.kind !== 'mark' && i.start <= pos && pos < i.start + i.text.length)[0];
+  const styleAt = (pos: number) => (at(pos) ?? [...items].reverse().find((i) => i.kind === 'plain' && i.start < pos) ?? items.find((i) => i.kind === 'plain'))?.rPr ?? '';
+  let out = '';
+  let cursor = 0; // index into items: everything before it is written
+  const emit = (a: number, b: number, mode: 'keep' | 'del') => {
+    for (; cursor < items.length; cursor++) {
+      const it = items[cursor];
+      const s = it.start;
+      const e = s + it.text.length;
+      if (it.kind === 'mark') { if (s >= b) break; out += it.xml; continue; }
+      if (s >= b) break;
+      const from = Math.max(a, s) - s;
+      const to = Math.min(b, e) - s;
+      const whole = from === 0 && to === it.text.length;
+      if (it.kind === 'atomic' && !whole) throw new FormatError('That change cuts through a tab, line break, field or image. Change a smaller piece of plain text.');
+      if (mode === 'keep') out += whole ? it.xml : `${it.open}${it.rPr}${W_T(it.text.slice(from, to))}</w:r>`;
+      else if (it.kind === 'atomic') out += `<w:del ${stamp()}>${it.xml.replace(/<w:t\b/g, '<w:delText').replace(/<\/w:t>/g, '</w:delText>').replace(/<w:instrText\b/g, '<w:delInstrText').replace(/<\/w:instrText>/g, '</w:delInstrText>')}</w:del>`;
+      else out += `<w:del ${stamp()}><w:r>${it.rPr}<w:delText xml:space="preserve">${encode(it.text.slice(from, to))}</w:delText></w:r></w:del>`;
+      if (e > b) return; // the rest of this run belongs to the next part
+    }
+  };
+  let pos = 0;
+  // Whole words change, as a person would mark them: "€4.61M" → "€4.82M", not "61M" → "82M".
+  let replaced = -1; // where the deletion that an insertion replaces began: the new words take its look
+  for (const part of changeBlocks(original, target)) {
+    if (part.added) {
+      out += `<w:ins ${stamp()}><w:r>${styleAt(replaced >= 0 ? replaced : pos > 0 ? pos - 1 : 0)}${W_T(part.value)}</w:r></w:ins>`;
+      replaced = -1;
+      continue;
+    }
+    replaced = part.removed ? pos : -1;
+    emit(pos, pos + part.value.length, part.removed ? 'del' : 'keep');
+    pos += part.value.length;
+  }
+  for (; cursor < items.length; cursor++) out += items[cursor].xml;
+  return `${head}${pPr}${out}${tail}`;
+}
+
+/* ----- finding text the way people (and small models) type it ----- */
+
+const FOLD: Record<string, string> = { '‘': "'", '’': "'", '‚': "'", '“': '"', '”': '"', '„': '"', '–': '-', '—': '-', '−': '-', ' ': ' ', ' ': ' ', ' ': ' ', '…': '...' };
+/** Folded text plus, for each folded character, where it came from. */
+function fold(s: string, lower = false): { text: string; map: number[] } {
+  let text = '';
+  const map: number[] = [];
+  let space = false;
+  for (let i = 0; i < s.length; i++) {
+    let c = FOLD[s[i]] ?? s[i];
+    if (/\s/.test(c)) { if (space) continue; c = ' '; space = true; } else space = false;
+    if (lower) c = c.toLowerCase();
+    for (const ch of c) { text += ch; map.push(i); }
+  }
+  map.push(s.length);
+  return { text, map };
+}
+
+/** Where `find` is in `text`: exact first, then ignoring quote styles, dashes and spacing, then case. */
+function locate(texts: string[], find: string): { para: number; start: number; end: number }[] {
+  const exact = texts.flatMap((t, para) => indexesOf(t, find).map((start) => ({ para, start, end: start + find.length })));
+  if (exact.length) return exact;
+  for (const lower of [false, true]) {
+    const needle = fold(find.trim(), lower).text;
+    if (!needle) return [];
+    const hits = texts.flatMap((t, para) => {
+      const f = fold(t, lower);
+      return indexesOf(f.text, needle).map((i) => ({ para, start: f.map[i], end: f.map[i + needle.length - 1] + 1 }));
+    });
+    if (hits.length) return hits;
+  }
+  return [];
+}
+function indexesOf(t: string, f: string) {
+  const out: number[] = [];
+  for (let i = t.indexOf(f); i >= 0 && f; i = t.indexOf(f, i + 1)) out.push(i);
+  return out;
+}
+
+async function loadDocument(bytes: Buffer) {
+  const zip = await loadZip(bytes);
+  const xml = await zip.file('word/document.xml')?.async('string');
+  if (!xml) throw new FormatError('This Word file has no document body.');
+  return { zip, xml, paras: [...xml.matchAll(PARA)] };
+}
+
+async function saveDocument(zip: JSZip, xml: string, para: RegExpMatchArray, replacement: string) {
+  zip.file('word/document.xml', xml.slice(0, para.index!) + replacement + xml.slice(para.index! + para[0].length));
+  return zipBytes(zip);
+}
 
 /**
  * Replace text inside one paragraph as a tracked change: the old words become a deletion
  * and the new words an insertion, both attributed to JARVIS, using the original run formatting.
  */
 export async function docxReplace(bytes: Buffer, find: string, replace: string): Promise<Buffer> {
-  if (!find) throw new FormatError('Give the exact text to replace.');
-  const zip = await loadZip(bytes);
-  const xml = await zip.file('word/document.xml')?.async('string');
-  if (!xml) throw new FormatError('This Word file has no document body.');
-  const paras = [...xml.matchAll(PARA)];
-  const hits = paras.filter((m) => paraText(m[0]).includes(find));
-  const total = hits.reduce((n, m) => n + paraText(m[0]).split(find).length - 1, 0);
-  if (total === 0) {
-    const anywhere = paras.map((m) => paraText(m[0])).join('\n').includes(find);
-    throw new FormatError(anywhere ? 'That text crosses a paragraph break. Replace one paragraph at a time.' : 'That text was not found in the document. Read the file again and copy it exactly.');
+  if (!find.trim()) throw new FormatError('Give the exact text to replace.');
+  const { zip, xml, paras } = await loadDocument(bytes);
+  const texts = paras.map((m) => paraText(m[0]));
+  const hits = locate(texts, find);
+  if (!hits.length) {
+    const anywhere = locate([texts.join('\n')], find).length > 0;
+    throw new FormatError(anywhere ? 'That text crosses a paragraph break. Replace one paragraph at a time, or use docx_edit_paragraph.' : 'That text was not found in the document. Read the file again, or use docx_edit_paragraph with the paragraph number (¶).');
   }
-  if (total > 1) throw new FormatError(`That text appears ${total} times. Include more words so it matches once.`);
-  const m = hits[0];
-  const p = m[0];
-  if (/<w:(ins|del)\b/.test(p)) throw new FormatError('This paragraph already has tracked changes. Accept or reject them in Word first.');
+  if (hits.length > 1) throw new FormatError(`That text appears ${hits.length} times. Include more words so it matches once, or use docx_edit_paragraph with the paragraph number (¶).`);
+  const { para, start, end } = hits[0];
+  const t = texts[para];
+  return saveDocument(zip, xml, paras[para], rewriteParagraph(paras[para][0], t.slice(0, start) + replace + t.slice(end)));
+}
 
-  // Map the paragraph's text onto its runs.
-  const runs: RunInfo[] = [];
-  let pos = 0;
-  for (const r of p.matchAll(RUN)) {
-    const body = r[0];
-    const text = decode((body.match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>|<w:tab\/>|<w:br\/>/g) ?? [])
-      .map((t) => (t === '<w:tab/>' ? '\t' : t === '<w:br/>' ? '\n' : t.replace(/<[^>]+>/g, ''))).join(''));
-    const rPr = body.match(/<w:rPr>[\s\S]*?<\/w:rPr>/)?.[0] ?? '';
-    const inner = body.replace(/^<w:r\b[^>]*>/, '').replace(/<\/w:r>$/, '').replace(rPr, '');
-    const plain = /^(\s*<w:t\b[^>]*>[\s\S]*?<\/w:t>\s*)*$/.test(inner);
-    runs.push({ xml: body, start: pos, end: pos + text.length, text, rPr, plain });
-    pos += text.length;
-  }
-  const at = paraText(p).indexOf(find);
-  const end = at + find.length;
-  const touched = runs.filter((r) => r.end > at && r.start < end);
-  if (touched.some((r) => !r.plain)) throw new FormatError('That text runs across a tab, line break, field or image. Replace a smaller piece of plain text.');
+/** Rewrite paragraph ¶n (as numbered by read_file) to new text, as tracked changes. Empty text deletes the paragraph. */
+export async function docxEditParagraph(bytes: Buffer, n: number, content: string): Promise<Buffer> {
+  const { zip, xml, paras } = await loadDocument(bytes);
+  const m = paras[n - 1];
+  if (!Number.isInteger(n) || !m) throw new FormatError(`There is no paragraph ¶${n}. The document has ${paras.length} paragraphs; read it again to see the numbers.`);
+  const text = content.replace(/\r/g, '');
+  if (text.includes('\n')) throw new FormatError('Give one paragraph without line breaks. Use docx_insert_paragraph to add more paragraphs after it.');
+  return saveDocument(zip, xml, m, rewriteParagraph(m[0], text, !text.trim()));
+}
 
-  const tRun = (rPr: string, text: string) => (text ? `<w:r>${rPr}<w:t xml:space="preserve">${encode(text)}</w:t></w:r>` : '');
-  let out = '';
-  touched.forEach((r, i) => {
-    const a = Math.max(at, r.start) - r.start;
-    const b = Math.min(end, r.end) - r.start;
-    out += tRun(r.rPr, r.text.slice(0, a));
-    out += `<w:del ${stamp()}><w:r>${r.rPr}<w:delText xml:space="preserve">${encode(r.text.slice(a, b))}</w:delText></w:r></w:del>`;
-    if (i === touched.length - 1) {
-      if (replace) out += `<w:ins ${stamp()}>${tRun(touched[0].rPr, replace)}</w:ins>`;
-      out += tRun(r.rPr, r.text.slice(b));
+/** Text runs for one line, with **bold** and *italic*, and [n] citations as footnotes when the source is known. */
+function lineRuns(line: string, rPr: string, notes: Awaited<ReturnType<typeof footnoteWriter>> | null, footnote?: (n: number) => string | null) {
+  const styled = (t: string) => {
+    let out = '';
+    for (const part of t.split(/(\*\*[^*]+\*\*|\*[^*\s][^*]*\*)/)) {
+      if (!part) continue;
+      const bold = /^\*\*[^*]+\*\*$/.test(part);
+      const italic = !bold && /^\*[^*]+\*$/.test(part);
+      const text = bold ? part.slice(2, -2) : italic ? part.slice(1, -1) : part;
+      const extra = bold ? '<w:b/>' : italic ? '<w:i/>' : '';
+      const props = extra ? (rPr ? rPr.replace('<w:rPr>', `<w:rPr>${extra}`) : `<w:rPr>${extra}</w:rPr>`) : rPr;
+      out += `<w:r>${props}${W_T(text)}</w:r>`;
     }
-  });
-  const first = p.indexOf(touched[0].xml);
-  const lastRun = touched[touched.length - 1].xml;
-  const last = p.indexOf(lastRun, first) + lastRun.length;
-  const newP = p.slice(0, first) + out + p.slice(last);
-  zip.file('word/document.xml', xml.slice(0, m.index!) + newP + xml.slice(m.index! + p.length));
-  return zipBytes(zip);
+    return out;
+  };
+  if (!notes || !footnote) return styled(line);
+  let out = '';
+  let last = 0;
+  for (const m of line.matchAll(/\s*\[(\d{1,3})\]/g)) {
+    const cite = footnote(Number(m[1]));
+    if (!cite) continue;
+    out += styled(line.slice(last, m.index));
+    out += `<w:r><w:rPr>${notes.refStyle}<w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="${notes.add(cite)}"/></w:r>`;
+    last = m.index! + m[0].length;
+  }
+  return out + styled(line.slice(last));
+}
+
+/** "# Title" → Heading1 …; "- item" → a bullet; anything else → body text. */
+function lineStyle(line: string): { text: string; style?: string; bullet: boolean } {
+  const h = line.match(/^(#{1,3})\s+(.*)$/);
+  if (h) return { text: h[2], style: `Heading${h[1].length}`, bullet: false };
+  const b = line.match(/^\s*[-*•]\s+(.*)$/);
+  if (b) return { text: `•\t${b[1]}`, bullet: true };
+  return { text: line, bullet: false };
 }
 
 /**
- * Add a new paragraph after the paragraph containing `after`, as a tracked insertion.
+ * Add new paragraphs after paragraph ¶n (a number) or the paragraph containing `after` (a few words),
+ * as a tracked insertion. Several lines become several paragraphs; "# " lines become headings.
  * Citation markers like [2] become real Word footnotes when `footnote(2)` knows the source.
  */
-export async function docxInsertParagraph(bytes: Buffer, after: string, text: string, style?: string, footnote?: (n: number) => string | null): Promise<Buffer> {
-  if (!text.trim()) throw new FormatError('Give the text of the new paragraph.');
-  const zip = await loadZip(bytes);
-  const xml = await zip.file('word/document.xml')?.async('string');
-  if (!xml) throw new FormatError('This Word file has no document body.');
-  const paras = [...xml.matchAll(PARA)];
-  const hits = after ? paras.filter((m) => paraText(m[0]).includes(after)) : [paras[paras.length - 1]];
-  if (!hits.length || !hits[0]) throw new FormatError('The paragraph to insert after was not found. Copy a few words of it exactly.');
-  if (hits.length > 1) throw new FormatError('Several paragraphs contain that text. Use more words.');
-  const anchor = hits[0];
-  const pPrSrc = anchor[0].match(/<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? '<w:pPr></w:pPr>';
-  let pPr = pPrSrc.replace(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/, '');
-  if (style) {
-    if (!/^[\w-]{1,60}$/.test(style)) throw new FormatError('That style name is not valid.');
-    pPr = /<w:pStyle\b[^>]*\/>/.test(pPr) ? pPr.replace(/<w:pStyle\b[^>]*\/>/, `<w:pStyle w:val="${style}"/>`) : pPr.replace('<w:pPr>', `<w:pPr><w:pStyle w:val="${style}"/>`);
+export async function docxInsertParagraph(bytes: Buffer, after: string | number, text: string, style?: string, footnote?: (n: number) => string | null): Promise<Buffer> {
+  const lines = text.replace(/\r/g, '').split('\n').filter((l) => l.trim());
+  if (!lines.length) throw new FormatError('Give the text of the new paragraph.');
+  const { zip, xml, paras } = await loadDocument(bytes);
+  let anchor: (typeof paras)[number] | undefined;
+  if (typeof after === 'number' || /^¶?\d+$/.test(String(after).trim())) {
+    const n = Number(String(after).replace('¶', ''));
+    anchor = n === 0 ? undefined : paras[n - 1];
+    if (n !== 0 && !anchor) throw new FormatError(`There is no paragraph ¶${n}. The document has ${paras.length} paragraphs.`);
+    if (n === 0) anchor = paras[0];
+  } else if (String(after).trim()) {
+    const hits = locate(paras.map((m) => paraText(m[0])), String(after));
+    const where = [...new Set(hits.map((h) => h.para))];
+    if (!where.length) throw new FormatError('The paragraph to insert after was not found. Use its number (¶) from read_file instead.');
+    if (where.length > 1) throw new FormatError('Several paragraphs contain that text. Use the paragraph number (¶) from read_file instead.');
+    anchor = paras[where[0]];
+  } else {
+    // The end of the document: after the last paragraph that has text.
+    anchor = [...paras].reverse().find((m) => paraText(m[0]).trim()) ?? paras[paras.length - 1];
   }
-  const mark = `<w:ins ${stamp()}/>`;
-  pPr = /<w:rPr>/.test(pPr) ? pPr.replace(/<w:rPr>/, `<w:rPr>${mark}`) : pPr.replace('</w:pPr>', `<w:rPr>${mark}</w:rPr></w:pPr>`);
-  const firstRPr = anchor[0].match(RUN)?.[0].match(/<w:rPr>[\s\S]*?<\/w:rPr>/)?.[0] ?? '';
-  const runRPr = style ? '' : firstRPr; // a new heading takes its look from the style
-  const notes = footnote ? await footnoteWriter(zip) : null;
-  const tRun = (t: string) => (t ? `<w:r>${runRPr}<w:t xml:space="preserve">${encode(t)}</w:t></w:r>` : '');
-  const runs = (line: string) => {
-    if (!notes) return tRun(line);
-    let out = '';
-    let last = 0;
-    for (const m of line.matchAll(/\s*\[(\d{1,3})\]/g)) {
-      const cite = footnote!(Number(m[1]));
-      if (!cite) continue;
-      out += tRun(line.slice(last, m.index));
-      out += `<w:r><w:rPr>${notes.refStyle}<w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="${notes.add(cite)}"/></w:r>`;
-      last = m.index! + m[0].length;
-    }
-    return out + tRun(line.slice(last));
+  if (!anchor) throw new FormatError('This document has no paragraphs to insert after.');
+  if (style && !/^[\w-]{1,60}$/.test(style)) throw new FormatError('That style name is not valid.');
+
+  // Body text takes its look from a body paragraph near the anchor, not from a heading.
+  const isHeading = (p: string) => /<w:pStyle w:val="(Heading|Title|Subtitle)/i.test(p);
+  const idx = paras.indexOf(anchor);
+  const body = isHeading(anchor[0]) ? (paras.slice(idx + 1).find((m) => !isHeading(m[0]) && paraText(m[0]).trim()) ?? paras.slice(0, idx).reverse().find((m) => !isHeading(m[0]) && paraText(m[0]).trim())) : anchor;
+  const cleanPPr = (p: string | undefined) => (p?.match(/<w:pPr>[\s\S]*?<\/w:pPr>/)?.[0] ?? '<w:pPr></w:pPr>')
+    .replace(/<w:sectPr\b[\s\S]*?<\/w:sectPr>/, '').replace(/<w:(ins|del)\b[^>]*\/>/g, '').replace(/<w:rPr><\/w:rPr>/, '');
+  const bodyPPr = body ? cleanPPr(body[0]) : '<w:pPr></w:pPr>';
+  const bodyRPr = (body?.[0].match(RUN) ?? []).map((r) => r.match(/<w:rPr>[\s\S]*?<\/w:rPr>/)?.[0] ?? '').find((r) => !/<w:(b|i|u|vertAlign)\b/.test(r)) ?? '';
+  const withStyle = (pPr: string, st: string | undefined) => {
+    let out = isHeading(pPr) && !st ? pPr.replace(/<w:pStyle\b[^>]*\/>/, '') : pPr;
+    if (st) out = /<w:pStyle\b[^>]*\/>/.test(out) ? out.replace(/<w:pStyle\b[^>]*\/>/, `<w:pStyle w:val="${st}"/>`) : out.replace('<w:pPr>', `<w:pPr><w:pStyle w:val="${st}"/>`);
+    const mark = `<w:ins ${stamp()}/>`;
+    return /<w:rPr>/.test(out) ? out.replace(/<w:rPr>/, `<w:rPr>${mark}`) : out.replace('</w:pPr>', `<w:rPr>${mark}</w:rPr></w:pPr>`);
   };
-  const lines = text.split('\n');
-  const newParas = lines.map((line) => `<w:p>${pPr}<w:ins ${stamp()}>${runs(line)}</w:ins></w:p>`).join('');
+  const notes = footnote ? await footnoteWriter(zip) : null;
+  const newParas = lines.map((raw) => {
+    const l = lineStyle(raw.trim());
+    const st = style || l.style;
+    const pPr = withStyle(bodyPPr, st);
+    return `<w:p>${pPr}<w:ins ${stamp()}>${lineRuns(l.text, st ? '' : bodyRPr, notes, footnote)}</w:ins></w:p>`;
+  }).join('');
   const at = anchor.index! + anchor[0].length;
   zip.file('word/document.xml', xml.slice(0, at) + newParas + xml.slice(at));
+  if (notes) await notes.save();
+  return zipBytes(zip);
+}
+
+const NEW_STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:eastAsia="Calibri" w:cs="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/><w:lang w:val="en-GB"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>`
+  + '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>'
+  + '<w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="240"/></w:pPr><w:rPr><w:b/><w:sz w:val="48"/></w:rPr></w:style>'
+  + [1, 2, 3].map((n) => `<w:style w:type="paragraph" w:styleId="Heading${n}"><w:name w:val="heading ${n}"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:uiPriority w:val="9"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="${[360, 240, 200][n - 1]}" w:after="120"/><w:outlineLvl w:val="${n - 1}"/></w:pPr><w:rPr><w:b/><w:sz w:val="${[32, 26, 23][n - 1]}"/></w:rPr></w:style>`).join('')
+  + '<w:style w:type="paragraph" w:styleId="ListBullet"><w:name w:val="List Bullet"/><w:basedOn w:val="Normal"/><w:pPr><w:tabs><w:tab w:val="left" w:pos="360"/></w:tabs><w:spacing w:after="60"/><w:ind w:left="360" w:hanging="360"/></w:pPr></w:style>'
+  + '<w:style w:type="paragraph" w:styleId="FootnoteText"><w:name w:val="footnote text"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:sz w:val="18"/></w:rPr></w:style>'
+  + '<w:style w:type="character" w:styleId="FootnoteReference"><w:name w:val="footnote reference"/><w:rPr><w:vertAlign w:val="superscript"/></w:rPr></w:style>'
+  + '</w:styles>';
+
+/**
+ * A new Word document from simple text: "# " / "## " / "### " lines are headings, "- " lines bullets,
+ * other lines paragraphs; **bold**, *italic* and [n] citations (as footnotes) inside lines.
+ */
+export async function docxCreate(text: string, footnote?: (n: number) => string | null): Promise<Buffer> {
+  const lines = text.replace(/\r/g, '').split('\n').filter((l) => l.trim());
+  if (!lines.length) throw new FormatError('Give the text of the document.');
+  const zip = new JSZip();
+  zip.file('[Content_Types].xml', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+    + '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>'
+    + '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>');
+  zip.file('_rels/.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>');
+  zip.file('word/_rels/document.xml.rels', '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>');
+  zip.file('word/styles.xml', NEW_STYLES);
+  const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  zip.file('docProps/core.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:creator>JARVIS</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified></cp:coreProperties>`);
+  const notes = footnote ? await footnoteWriter(zip) : null;
+  const body = lines.map((raw, i) => {
+    const l = lineStyle(raw.trim());
+    const st = i === 0 && l.style === 'Heading1' ? 'Title' : l.bullet ? 'ListBullet' : l.style;
+    return `<w:p>${st ? `<w:pPr><w:pStyle w:val="${st}"/></w:pPr>` : ''}${lineRuns(l.text, '', notes, footnote)}</w:p>`;
+  }).join('');
+  zip.file('word/document.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body>${body}`
+    + '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>');
   if (notes) await notes.save();
   return zipBytes(zip);
 }

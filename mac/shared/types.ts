@@ -55,6 +55,7 @@ export interface Settings {
   maxParallel: number;
   workspace: string | null;   // absolute path of the folder Jarvis works in
   webAccess: boolean;         // web search and page reading
+  thinking: 'auto' | 'on' | 'off'; // let the model reason first: auto = for file work and plan steps
 }
 
 /** A page or file a lane read, numbered per lane so answers and documents can cite it as [n]. */
@@ -142,7 +143,7 @@ export type JarvisEvent =
   | { type: 'lanes'; lanes: Lane[] }
   | { type: 'messages'; laneId: string; messages: Message[] }
   | { type: 'message'; message: Message }
-  | { type: 'stream'; laneId: string; messageId: string; text: string }
+  | { type: 'stream'; laneId: string; messageId: string; text: string; thinking?: string }
   | { type: 'steps'; laneId: string; steps: PlanStep[] }
   | { type: 'memories'; memories: Memory[] }
   | { type: 'settings'; settings: Settings }
@@ -211,4 +212,5 @@ export const DEFAULT_SETTINGS: Settings = {
   maxParallel: 2,
   workspace: null,
   webAccess: true,
+  thinking: 'auto',
 };

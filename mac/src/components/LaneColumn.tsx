@@ -45,6 +45,7 @@ function Chat({ lane }: { lane: Lane }) {
   const messages = useStore((s) => s.messages[lane.id] ?? EMPTY_MESSAGES);
   const steps = useStore((s) => s.steps[lane.id] ?? EMPTY_STEPS);
   const streams = useStore((s) => s.streams);
+  const thoughts = useStore((s) => s.thoughts);
   const ready = useStore(engineReady);
   const engineKnown = useStore((s) => s.engine !== null);
   const ref = useRef<HTMLDivElement>(null);
@@ -74,12 +75,19 @@ function Chat({ lane }: { lane: Lane }) {
           case 'text': {
             if (m.role === 'user') return <div key={m.id} className="msg-user">{String(p.text)}</div>;
             const text = streams[m.id] ?? String(p.text ?? '');
-            if (!text && !p.streaming) return null;
-            if (!text) return null;
+            const thought = String(p.thinking ?? '') || thoughts[m.id] || '';
+            const live = !!p.streaming;
+            if (!text && !thought) return null;
             return (
               <div key={m.id} className="msg-jarvis">
                 <span className="label">{p.step ? `Jarvis · step ${String(p.step)}` : 'Jarvis'}</span>
-                <p><Cited text={text} />{p.interrupted ? <span className="muted"> (stopped)</span> : null}</p>
+                {thought && (
+                  <details className="thinking">
+                    <summary>{live && !text ? 'Thinking…' : 'Reasoning'}</summary>
+                    <p>{thought}</p>
+                  </details>
+                )}
+                {text && <p><Cited text={text} />{p.interrupted ? <span className="muted"> (stopped)</span> : null}</p>}
               </div>
             );
           }

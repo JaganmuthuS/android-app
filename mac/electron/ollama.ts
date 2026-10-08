@@ -7,6 +7,11 @@ export interface ToolSpec { type: 'function'; function: { name: string; descript
 
 /** Ollama's default context is only a few thousand tokens; file contents need more room. */
 export const CONTEXT_TOKENS = 16384;
+/**
+ * Keep the model in memory between requests. Ollama unloads it after five idle minutes by default,
+ * and loading an 8B model again takes 5 to 20 seconds on every first message.
+ */
+export const KEEP_ALIVE = '30m';
 
 export class OllamaError extends Error {}
 
@@ -56,11 +61,24 @@ export class Ollama {
     return (await this.round(opts)).content;
   }
 
+  /** Load the model into memory ahead of the first message, with the same settings chat uses. */
+  async warm(model: string): Promise<void> {
+    try {
+      await fetch(this.url('/api/chat'), {
+        method: 'POST',
+        body: JSON.stringify({ model, messages: [], keep_alive: KEEP_ALIVE, options: { num_ctx: CONTEXT_TOKENS } }),
+        signal: AbortSignal.timeout(120_000),
+      });
+    } catch { /* not running yet: the setup card handles that */ }
+  }
+
   /** One model turn, which may end in tool calls instead of (or as well as) text. */
   async round(opts: {
     model: string; messages: ChatMessage[]; signal?: AbortSignal; onText?: (text: string) => void;
     format?: object; temperature?: number; tools?: ToolSpec[];
-  }): Promise<{ content: string; toolCalls: ToolCall[] }> {
+    /** Let the model reason before it answers (qwen3 and other thinking models). */
+    think?: boolean; onThinking?: (thinking: string) => void;
+  }): Promise<{ content: string; toolCalls: ToolCall[]; thinking: string }> {
     let res: Response;
     try {
       res = await fetch(this.url('/api/chat'), {
@@ -70,10 +88,11 @@ export class Ollama {
           model: opts.model,
           messages: opts.messages,
           stream: true,
-          think: false,
+          think: !!opts.think,
           format: opts.format,
           tools: opts.tools,
-          options: { temperature: opts.temperature ?? 0.4, num_ctx: CONTEXT_TOKENS },
+          keep_alive: KEEP_ALIVE,
+          options: { temperature: opts.temperature ?? (opts.think ? 0.6 : 0.4), num_ctx: CONTEXT_TOKENS },
         }),
       });
     } catch (e) {
@@ -84,20 +103,23 @@ export class Ollama {
       const body = await res.text().catch(() => '');
       let msg = body;
       try { msg = (JSON.parse(body) as { error?: string }).error ?? body; } catch { /* plain text */ }
+      if (opts.think && /does not support thinking|think value/i.test(msg)) return this.round({ ...opts, think: false });
       if (res.status === 404) throw new OllamaError(`The model "${opts.model}" is not downloaded yet. Open Settings to download it.`);
       if (/does not support tools/i.test(msg)) throw new OllamaError(`The model "${opts.model}" can't use tools, so it can't work with files. Choose qwen3:8b or qwen3:4b in Settings.`);
       throw new OllamaError(`Ollama returned an error: ${msg || res.status}`);
     }
     let raw = '';
+    let thinking = '';
     const toolCalls: ToolCall[] = [];
     await readLines(res.body, (line) => {
-      const j = JSON.parse(line) as { message?: { content?: string; tool_calls?: ToolCall[] }; error?: string };
+      const j = JSON.parse(line) as { message?: { content?: string; thinking?: string; tool_calls?: ToolCall[] }; error?: string };
       if (j.error) throw new OllamaError(j.error);
       if (j.message?.tool_calls?.length) toolCalls.push(...j.message.tool_calls);
+      if (j.message?.thinking) { thinking += j.message.thinking; opts.onThinking?.(thinking.trim()); }
       raw += j.message?.content ?? '';
       if (j.message?.content) opts.onText?.(stripThinking(raw).trimStart());
     });
-    return { content: stripThinking(raw).trim(), toolCalls };
+    return { content: stripThinking(raw).trim(), toolCalls, thinking: thinking.trim() };
   }
 }
 

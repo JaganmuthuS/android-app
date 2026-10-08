@@ -4,6 +4,19 @@ A desktop agent for documents, folders and research, built from `CLAUDE_CODE_PRO
 
 ## Status: Phase 5 of 8
 
+**New in 0.5.1: faster, and much better at Word documents**
+- **About twice as fast per request**: Jarvis no longer makes a separate "triage" call before answering. One model call answers, uses tools, or proposes a plan (through a `propose_plan` tool) for big tasks.
+- **No more waiting for the model to load**: the model is loaded when JARVIS starts and when you switch back to it, and Ollama keeps it in memory for 30 minutes instead of 5.
+- **Thinking** (Settings → Behaviour): the model reasons before acting on documents and plan steps, and answers quick questions without it. Open **Reasoning** under a reply to see it. Options: Off, For documents (default), Always.
+- **Word, rebuilt**:
+  - `read_file` numbers every paragraph (¶1, ¶2 …). **docx_edit_paragraph** rewrites a paragraph by number with its complete new text, so the model no longer has to copy text exactly. Only the words that changed are marked, as one clean tracked change per spot, in the original formatting.
+  - The same paragraph can be edited again while the first edit is still waiting for review. Edits fold together, and "Reject all" in Word still gives back the original exactly.
+  - **replace_text** finds text even when typed with straight instead of curly quotes, other dashes, extra spaces or different case.
+  - **docx_insert_paragraph** inserts after a paragraph number, takes several lines at once (with "# " headings), and uses body text formatting when inserting after a heading.
+  - An empty rewrite deletes a paragraph (tracked).
+  - **New Word documents**: `write_file` with a .docx path creates a real Word file from simple text: headings, bullets, **bold**, *italic*, and [n] citations as footnotes.
+- Files you mention in a message are attached more compactly, so the model reads less before it starts.
+
 **New in Phase 5: web research with numbered sources**
 - **Free web search**: Jarvis searches through DuckDuckGo (falling back to DuckDuckGo Lite, then Wikipedia) and reads pages and online PDFs. No account, no API key, no cost. Only your search words and the page addresses leave the Mac.
 - **Numbered sources**: every page and every workspace file Jarvis reads gets a number in its lane. Answers cite them as **[1]**, **[2]**; click a number in the chat to open that source.

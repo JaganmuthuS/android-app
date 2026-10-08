@@ -1,10 +1,17 @@
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import { describe, expect, it } from 'vitest';
-import { docxInsertParagraph, docxReplace, docxText, pdfText, pptxReplace, pptxText, xlsxText, xlsxWrite } from '../electron/formats';
+import { docxCreate, docxEditParagraph, docxInsertParagraph, docxReplace, docxText, pdfText, pptxReplace, pptxText, xlsxText, xlsxWrite } from '../electron/formats';
 import { STYLES_XML, makeDocx, makePdf, makePptx, makeXlsx } from './fixtures';
 
 const part = async (b: Buffer, name: string) => (await JSZip.loadAsync(b)).file(name)!.async('string');
+/** The document text as Word shows it after "Reject all changes". */
+const rejectAll = (xml: string) => xml
+  .replace(/<w:ins\b[^>]*[^/]>[\s\S]*?<\/w:ins>/g, '')
+  .replace(/<w:delText\b[^>]*>([\s\S]*?)<\/w:delText>/g, '<w:t>$1</w:t>')
+  .split(/<w:p\b/)
+  .map((p) => (p.replace(/<w:tab\/>/g, '<w:t>\t</w:t>').match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>/g) ?? []).map((t) => t.replace(/<[^>]+>/g, '')).join(''))
+  .join('\n');
 
 describe('Word', () => {
   it('turns [n] citations into real, tracked footnotes', async () => {
@@ -33,7 +40,7 @@ describe('Word', () => {
     expect(t).toContain('Net revenue was €4.61M, slightly ahead of the June forecast.');
   });
 
-  it('replaces text across runs as a tracked change, keeping run formatting and everything else', async () => {
+  it('replaces text across runs as tracked whole-word changes, keeping run formatting and everything else', async () => {
     const before = await makeDocx();
     const after = await docxReplace(before, '€4.61M, slightly ahead of', '€4.82M, 3.1% above');
     const xml = await part(after, 'word/document.xml');
@@ -45,15 +52,67 @@ describe('Word', () => {
     const untouched = (s: string) => s.match(/<w:p><w:pPr><w:pStyle w:val="Heading1"\/>[\s\S]*?<\/w:p>/)![0];
     expect(untouched(xml)).toBe(untouched(await part(before, 'word/document.xml')));
     expect(await docxText(after)).toContain('Net revenue was €4.82M, 3.1% above the June forecast.');
+    // Rejecting every change in Word gives back the original text exactly.
+    expect(rejectAll(xml)).toContain('Net revenue was €4.61M, slightly ahead of the June forecast.');
   });
 
-  it('refuses ambiguous, missing, or tab-crossing text', async () => {
+  it('finds text typed with other quotes, dashes, spacing or case', async () => {
     const b = await makeDocx();
-    await expect(docxReplace(b, 'not there', 'x')).rejects.toThrow(/not found/);
+    const after = await docxReplace(b, 'net revenue  was', 'Revenue was');
+    expect(await docxText(after)).toContain('Revenue was €4.61M');
+    await expect(docxReplace(b, 'not there', 'x')).rejects.toThrow(/not found[\s\S]*¶/);
     await expect(docxReplace(b, 'e', 'x')).rejects.toThrow(/appears \d+ times/);
-    await expect(docxReplace(b, 'Before\tafter', 'x')).rejects.toThrow(/tab/);
-    const once = await docxReplace(b, 'June forecast', 'plan');
-    await expect(docxReplace(once, 'Net revenue', 'Revenue')).rejects.toThrow(/already has tracked changes/);
+  });
+
+  it('edits the same paragraph again while the first edit waits for review', async () => {
+    const once = await docxReplace(await makeDocx(), 'June forecast', 'plan');
+    const twice = await docxReplace(once, 'Net revenue', 'Group revenue');
+    expect(await docxText(twice)).toContain('Group revenue was €4.61M, slightly ahead of the plan.');
+    expect(rejectAll(await part(twice, 'word/document.xml'))).toContain('Net revenue was €4.61M, slightly ahead of the June forecast.');
+    // A whole tab can be removed; it is tracked like text.
+    const tab = await docxReplace(once, 'Before\tafter', 'Before after');
+    expect(await docxText(tab)).toContain('Before after tab');
+  });
+
+  it("refuses paragraphs with someone else's tracked changes", async () => {
+    const zip = await JSZip.loadAsync(await makeDocx());
+    const xml = (await zip.file('word/document.xml')!.async('string')).replace('<w:r><w:t xml:space="preserve"> the June', '<w:ins w:id="1" w:author="Anna"><w:r><w:t>new </w:t></w:r></w:ins><w:r><w:t xml:space="preserve"> the June');
+    zip.file('word/document.xml', xml);
+    const b = await zip.generateAsync({ type: 'nodebuffer' });
+    await expect(docxReplace(b, 'Net revenue', 'Revenue')).rejects.toThrow(/someone else/);
+  });
+
+  it('numbers paragraphs for the model, and edits or deletes a paragraph by number', async () => {
+    const b = await makeDocx();
+    const numbered = await docxText(b, true);
+    expect(numbered).toContain('¶1 [Heading1] 2. Financial summary');
+    expect(numbered).toContain('¶2 Net revenue was');
+    const edited = await docxEditParagraph(b, 2, 'Net revenue was €4.82M, 3.1% above the June forecast.');
+    expect(await docxText(edited)).toContain('Net revenue was €4.82M, 3.1% above the June forecast.');
+    const removed = await docxEditParagraph(b, 3, '');
+    const xml = await part(removed, 'word/document.xml');
+    expect(xml).toMatch(/<w:p><w:pPr><w:rPr><w:del [^>]*w:author="JARVIS"[^>]*\/><\/w:rPr><\/w:pPr><w:del /);
+    expect(await docxText(removed)).not.toContain('after tab');
+    await expect(docxEditParagraph(b, 99, 'x')).rejects.toThrow(/no paragraph ¶99/);
+    // A paragraph JARVIS added and then removes leaves no trace.
+    const added = await docxInsertParagraph(b, 2, 'Temporary line');
+    const gone = await docxEditParagraph(added, 3, '');
+    expect(await part(gone, 'word/document.xml')).toBe(await part(b, 'word/document.xml'));
+  });
+
+  it('creates a new Word document from simple text', async () => {
+    const cite = (n: number) => (n === 1 ? 'ECB. https://www.ecb.europa.eu/' : null);
+    const b = await docxCreate('# Board memo\n\nRevenue rose **3.1%** [1].\n## Risks\n- Rates\n- *Energy* prices', cite);
+    const text = await docxText(b);
+    expect(text).toContain('[Title] Board memo');
+    expect(text).toContain('[Heading2] Risks');
+    expect(text).toContain('Revenue rose 3.1%[^1].');
+    expect(text).toContain('•\tRates');
+    expect(text).toMatch(/Footnotes:\n\[\^1\] +ECB\./);
+    const xml = await part(b, 'word/document.xml');
+    expect(xml).toContain('<w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">3.1%</w:t></w:r>');
+    expect(xml).not.toMatch(/<w:ins|<w:del/); // a new file is reviewed as a whole, not as tracked changes
+    expect(await part(b, '[Content_Types].xml')).toContain('/word/footnotes.xml');
   });
 
   it('inserts a tracked paragraph after an anchor, with a style', async () => {
@@ -61,6 +120,16 @@ describe('Word', () => {
     const xml = await part(after, 'word/document.xml');
     expect(xml).toMatch(/June forecast\.<\/w:t><\/w:r><\/w:p><w:p><w:pPr><w:pStyle w:val="Heading1"\/><w:rPr><w:ins [^>]*\/><\/w:rPr><\/w:pPr><w:ins [^>]*><w:r><w:t xml:space="preserve">4\.2 Regulatory outlook<\/w:t>/);
     expect(await docxText(after)).toContain('[Heading1] 4.2 Regulatory outlook');
+  });
+
+  it('inserts body text after a heading in the body style, and several lines as several paragraphs', async () => {
+    const after = await docxInsertParagraph(await makeDocx(), 1, 'First new line.\n## A sub-heading\nSecond new line.');
+    const xml = await part(after, 'word/document.xml');
+    expect(xml).toMatch(/2\. Financial summary<\/w:t><\/w:r><\/w:p><w:p><w:pPr><w:pStyle w:val="BoardBody"\/><w:rPr><w:ins [^>]*\/><\/w:rPr><\/w:pPr><w:ins [^>]*><w:r><w:rPr><w:sz w:val="22"\/><\/w:rPr><w:t xml:space="preserve">First new line\./);
+    const text = await docxText(after, true);
+    expect(text).toContain('¶2 First new line.');
+    expect(text).toContain('¶3 [Heading2] A sub-heading');
+    expect(text).toContain('¶4 Second new line.');
   });
 });
 

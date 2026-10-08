@@ -14,6 +14,7 @@ interface State {
   messages: Record<string, Message[]>;
   steps: Record<string, PlanStep[]>;
   streams: Record<string, string>;
+  thoughts: Record<string, string>;
   drafts: Record<string, string>;
   memories: Memory[];
   settings: Settings | null;
@@ -103,7 +104,7 @@ export const useStore = create<Store>((set, get) => {
           return { messages: { ...s.messages, [e.laneId]: e.messages }, streams };
         });
         break;
-      case 'stream': set((s) => ({ streams: { ...s.streams, [e.messageId]: e.text } })); break;
+      case 'stream': set((s) => ({ streams: { ...s.streams, [e.messageId]: e.text }, ...(e.thinking ? { thoughts: { ...s.thoughts, [e.messageId]: e.thinking } } : {}) })); break;
       case 'steps': set((s) => ({ steps: { ...s.steps, [e.laneId]: e.steps } })); break;
       case 'memories': set({ memories: e.memories }); break;
       case 'settings': set({ settings: e.settings }); break;
@@ -139,7 +140,7 @@ export const useStore = create<Store>((set, get) => {
   };
 
   return {
-    ready: false, lanes: [], laneId: null, tab: 'doc', messages: {}, steps: {}, streams: {}, drafts: {},
+    ready: false, lanes: [], laneId: null, tab: 'doc', messages: {}, steps: {}, streams: {}, thoughts: {}, drafts: {},
     memories: [], settings: null, engine: null, pull: null, settingsOpen: false, toast: null,
     scopes: [], changes: {}, checkpoints: {}, touches: [], sources: {}, focusedSource: null, focusedChange: null, cpSel: null, checkOnOpen: false,
     update: { state: 'idle' },
@@ -214,7 +215,7 @@ export const useStore = create<Store>((set, get) => {
     async deleteMemory(id) { await guard(() => api!.deleteMemory(id)); },
     async deleteAllData() {
       await guard(() => api!.deleteAllData());
-      set({ messages: {}, steps: {}, streams: {}, drafts: {} });
+      set({ messages: {}, steps: {}, streams: {}, thoughts: {}, drafts: {} });
       await ensureLane();
     },
     openSettings(open) { set({ settingsOpen: open }); if (open) void get().refreshEngine(); },

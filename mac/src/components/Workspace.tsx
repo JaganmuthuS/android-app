@@ -1,4 +1,5 @@
-import { diffLines, diffWordsWithSpace, type Change as DiffPart } from 'diff';
+import { diffLines } from 'diff';
+import { changeBlocks } from '../../shared/diff';
 import { useEffect, useRef } from 'react';
 import type { Change, FileTouch, Source, UiState, WebSearch } from '../../shared/types';
 import { laneChanges, laneSources, useStore } from '../store';
@@ -112,7 +113,7 @@ function ChangeView({ change: c }: { change: Change }) {
     const before = c.before ?? '';
     const after = c.after ?? '';
     if (c.status === 'pending') {
-      const parts: DiffPart[] = before.length + after.length > 40_000 ? diffLines(before, after) : diffWordsWithSpace(before, after);
+      const parts: { value: string; added?: boolean; removed?: boolean }[] = before.length + after.length > 40_000 ? diffLines(before, after) : changeBlocks(before, after);
       body = <pre className="doc-text">{parts.map((p, i) => <span key={i} className={p.added ? 'ins' : p.removed ? 'del' : undefined}>{p.value}</span>)}</pre>;
     } else {
       body = <pre className="doc-text">{c.status === 'rejected' ? before : after}</pre>;

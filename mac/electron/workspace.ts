@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { FormatError, docxInsertParagraph, docxReplace, docxText, pdfText, pptxReplace, pptxText, xlsxText, xlsxWrite, type CellEdit } from './formats';
+import { FormatError, docxCreate, docxEditParagraph, docxInsertParagraph, docxReplace, docxText, pdfText, pptxReplace, pptxText, xlsxText, xlsxWrite, type CellEdit } from './formats';
 import type { Db } from './db';
 import type { Autonomy, Change, FileScope, ScopeMode, TouchAction } from '../shared/types';
 
@@ -41,13 +41,17 @@ const TOOL_ALIASES: Record<string, string> = {
   read: 'read_file', open_file: 'read_file', write: 'write_file', create_file: 'write_file', save_file: 'write_file',
   edit_file: 'replace_text', rename_file: 'move_file', insert_paragraph: 'docx_insert_paragraph', write_cells: 'xlsx_write_cells', update_cells: 'xlsx_write_cells', set_cells: 'xlsx_write_cells', move: 'move_file', rename: 'move_file', remove_file: 'delete_file', delete: 'delete_file',
   search: 'search_files', find_files: 'search_files',
+  edit_paragraph: 'docx_edit_paragraph', rewrite_paragraph: 'docx_edit_paragraph', docx_rewrite_paragraph: 'docx_edit_paragraph', replace_paragraph: 'docx_edit_paragraph', docx_replace_paragraph: 'docx_edit_paragraph',
+  docx_create: 'write_file', create_docx: 'write_file', create_document: 'write_file', new_document: 'write_file',
 };
-const PATH_TOOLS = new Set(['read_file', 'write_file', 'replace_text', 'delete_file', 'create_folder']);
+const PATH_TOOLS = new Set(['read_file', 'write_file', 'replace_text', 'delete_file', 'create_folder', 'docx_edit_paragraph', 'docx_insert_paragraph']);
 const ARG_ALIASES: Record<string, string[]> = {
   path: ['path', 'file', 'file_path', 'filepath', 'filename', 'file_name', 'folder', 'folder_path', 'folder_name', 'dir', 'directory', 'directory_path', 'name', 'target_path'],
   from: ['from', 'source', 'src', 'old_path', 'from_path'],
   to: ['to', 'destination', 'dest', 'new_path', 'to_path', 'target'],
-  content: ['content', 'contents', 'text', 'body', 'data', 'paragraph', 'new_paragraph'],
+  content: ['content', 'contents', 'text', 'body', 'data', 'new_paragraph', 'new_content', 'paragraph_text'],
+  paragraph: ['paragraph', 'paragraph_number', 'para', 'number', 'index', 'n'],
+  after_paragraph: ['after_paragraph', 'after_paragraph_number', 'after_para'],
   after: ['after', 'after_text', 'anchor', 'insert_after'],
   cells: ['cells', 'values', 'updates', 'data_cells'],
   sheet: ['sheet', 'sheet_name', 'worksheet', 'tab'],
@@ -203,7 +207,7 @@ export class Workspace {
   }
 
   /** Read files the user names in a message (by path or file name), so a small model has them in front of it. */
-  async attachMentioned(laneId: string, text: string, maxFiles = 3, maxChars = 12_000): Promise<string> {
+  async attachMentioned(laneId: string, text: string, maxFiles = 3, totalChars = 16_000): Promise<string> {
     const root = this.root();
     if (!root) return '';
     const wanted = new Set((text.match(/[\w./~-]+\.[A-Za-z0-9]{1,6}\b/g) ?? []).map((t) => t.replace(/^\.\//, '')));
@@ -225,7 +229,8 @@ export class Workspace {
     for (const rel of found) {
       try {
         const { result } = await this.exec('read_file', { path: rel }, { laneId, stepIndex: null, autonomy: 'ask_every_change' });
-        parts.push(`--- ${rel} ---\n${result.slice(0, maxChars)}`);
+        const room = Math.floor(totalChars / found.length);
+        parts.push(`--- ${rel} ---\n${result.length > room ? `${result.slice(0, room)}\n[… more not shown; read_file shows all of it]` : result}`);
       } catch { /* not readable: the model will be told when it tries */ }
     }
     return parts.length ? `The user mentioned these files; their current content:\n${parts.join('\n\n')}` : '';
@@ -298,9 +303,10 @@ export class Workspace {
       case 'list_dir': return this.listDir(s('path') || '.');
       case 'read_file': return this.readFile(s('path'), ctx);
       case 'search_files': return this.search(s('query'), s('path') || '.');
-      case 'write_file': return this.stage(ctx, s('path'), s('content'), s('reason'));
+      case 'write_file': return /\.docx$/i.test(s('path')) ? this.docxNew(ctx, s('path'), s('content'), s('reason')) : this.stage(ctx, s('path'), s('content'), s('reason'));
+      case 'docx_edit_paragraph': return this.docxEdit(ctx, s('path'), Number(String(a.paragraph ?? '').replace('¶', '')), s('content'), s('reason'));
       case 'replace_text': return this.replaceText(ctx, s('path'), s('find'), s('replace'), s('reason'), a.slide == null ? undefined : Number(a.slide));
-      case 'docx_insert_paragraph': return this.docxInsert(ctx, s('path'), s('after'), s('content'), s('style'), s('reason'));
+      case 'docx_insert_paragraph': return this.docxInsert(ctx, s('path'), a.after_paragraph != null && a.after_paragraph !== '' ? Number(String(a.after_paragraph).replace('¶', '')) : s('after'), s('content') || (Number.isNaN(Number(a.paragraph)) ? s('paragraph') : ''), s('style'), s('reason'));
       case 'xlsx_write_cells': return this.xlsxCells(ctx, s('path'), s('sheet'), a.cells, s('reason'));
       case 'move_file': return this.stageMove(ctx, s('from'), s('to'), s('reason'));
       case 'delete_file': return this.stageDelete(ctx, s('path'), s('reason'));
@@ -349,7 +355,7 @@ export class Workspace {
     if (kind) {
       const bytes = this.currentBytes(ctx.laneId, r.rel, r.abs);
       if (!bytes) throw new WorkspaceError(`${r.rel} does not exist.`);
-      text = kind === 'docx' ? await docxText(bytes) : kind === 'xlsx' ? await xlsxText(bytes) : kind === 'pptx' ? await pptxText(bytes) : await pdfText(bytes);
+      text = kind === 'docx' ? await docxText(bytes, true) : kind === 'xlsx' ? await xlsxText(bytes) : kind === 'pptx' ? await pptxText(bytes) : await pdfText(bytes);
     } else {
       const cur = await this.currentText(ctx.laneId, r.rel, r.abs);
       if (cur === null) throw new WorkspaceError(`${r.rel} does not exist.`);
@@ -424,13 +430,37 @@ export class Workspace {
     return pptxReplace(bytes, slides[0], find, replace);
   }
 
-  private async docxInsert(ctx: ToolContext, rel: string, after: string, text: string, style: string, reason: string) {
+  private async docxInsert(ctx: ToolContext, rel: string, after: string | number, text: string, style: string, reason: string) {
     const r = this.resolve(rel, 'write');
     if (OFFICE[path.extname(r.abs).toLowerCase()] !== 'docx') throw new WorkspaceError('docx_insert_paragraph only works on Word (.docx) files.');
     const bytes = this.mustBytes(ctx.laneId, r.rel, r.abs);
     const next = await docxInsertParagraph(bytes, after, text, style || undefined, ctx.footnote);
-    return this.stageBytes(ctx, r.rel, r.scope, bytes, next, await docxText(bytes), await docxText(next), `New paragraph: “${short(text)}” (tracked change)`, reason);
+    const n = text.split('\n').filter((l) => l.trim()).length;
+    const out = await this.stageBytes(ctx, r.rel, r.scope, bytes, next, await docxText(bytes), await docxText(next), `${n > 1 ? `${n} new paragraphs` : 'New paragraph'}: “${short(text)}” (tracked change)`, reason);
+    return { ...out, result: `${out.result} Paragraph numbers after the insertion have moved; read the file again before editing by number.` };
   }
+
+  private async docxEdit(ctx: ToolContext, rel: string, n: number, text: string, reason: string) {
+    const r = this.resolve(rel, 'write');
+    if (OFFICE[path.extname(r.abs).toLowerCase()] !== 'docx') throw new WorkspaceError('docx_edit_paragraph only works on Word (.docx) files.');
+    if (!Number.isInteger(n) || n < 1) throw new WorkspaceError('docx_edit_paragraph needs "paragraph": the ¶ number shown by read_file, e.g. 12.');
+    const bytes = this.mustBytes(ctx.laneId, r.rel, r.abs);
+    const next = await docxEditParagraph(bytes, n, text);
+    const title = text.trim() ? `¶${n} rewritten: “${short(text)}” (tracked change)` : `¶${n} deleted (tracked change)`;
+    return this.stageBytes(ctx, r.rel, r.scope, bytes, next, await docxText(bytes), await docxText(next), title, reason);
+  }
+
+  /** write_file to a .docx path makes a real Word document; an existing one is never overwritten wholesale. */
+  private async docxNew(ctx: ToolContext, rel: string, text: string, reason: string) {
+    const r = this.resolve(rel, 'write');
+    const pending = this.db.pendingChangeFor(ctx.laneId, r.rel);
+    if (pending ? pending.kind !== 'create' : fs.existsSync(r.abs)) {
+      throw new WorkspaceError(`${r.rel} already exists. Change it with docx_edit_paragraph, docx_insert_paragraph or replace_text, so its formatting and the rest of the document are kept.`);
+    }
+    const next = await docxCreate(text, ctx.footnote);
+    return this.stageBytes(ctx, r.rel, r.scope, null, next, '', await docxText(next), `New Word document ${path.basename(r.rel)}`, reason);
+  }
+
 
   private async xlsxCells(ctx: ToolContext, rel: string, sheet: string, cells: unknown, reason: string) {
     const r = this.resolve(rel, 'write');
@@ -462,7 +492,7 @@ export class Workspace {
   }
 
   /** Stage an edit to a binary file (Word, Excel, PowerPoint). Text previews drive the diff view. */
-  private async stageBytes(ctx: ToolContext, rel: string, scope: string, before: Buffer, after: Buffer, beforeText: string, afterText: string, title: string, reason: string, cells?: CellEdit[]) {
+  private async stageBytes(ctx: ToolContext, rel: string, scope: string, before: Buffer | null, after: Buffer, beforeText: string, afterText: string, title: string, reason: string, cells?: CellEdit[]) {
     const pending = this.db.pendingChangeFor(ctx.laneId, rel);
     const why = reason.trim() || 'No reason given.';
     const afterBlob = this.putBlob(after);
@@ -472,11 +502,12 @@ export class Workspace {
       this.db.updateChange(pending.id, { after: afterText || pending.after, afterBlob, title, reason: why, detail: merged ?? pending.detail, risk: 'high' });
       change = this.db.getChange(pending.id)!;
     } else {
-      const risk = cells ? (RISKY_PATH.test(rel) || cells.length > 20 ? 'high' : 'low') : riskOf('edit', beforeText, afterText, rel, this.modeFor(scope));
+      const kind = before ? 'edit' : 'create';
+      const risk = cells ? (RISKY_PATH.test(rel) || cells.length > 20 ? 'high' : 'low') : riskOf(kind, before ? beforeText : null, afterText, rel, this.modeFor(scope));
       change = this.db.addChange({
-        laneId: ctx.laneId, stepIndex: ctx.stepIndex, filePath: rel, kind: 'edit', title, reason: why,
-        before: beforeText, after: afterText, status: 'pending', risk: this.modeFor(scope) === 'edit_ask' ? 'high' : risk,
-        beforeBlob: this.putBlob(before), afterBlob, detail: cells ? JSON.stringify(cells) : undefined,
+        laneId: ctx.laneId, stepIndex: ctx.stepIndex, filePath: rel, kind, title, reason: why,
+        before: before ? beforeText : null, after: afterText, status: 'pending', risk: this.modeFor(scope) === 'edit_ask' ? 'high' : risk,
+        beforeBlob: before ? this.putBlob(before) : undefined, afterBlob, detail: cells ? JSON.stringify(cells) : undefined,
       });
     }
     return this.settle(ctx, change, scope);
@@ -486,7 +517,7 @@ export class Workspace {
     const ext = path.extname(abs).toLowerCase();
     const office = OFFICE[ext];
     if (office === 'pdf') throw new WorkspaceError('PDFs can be read but not edited. Jarvis can write the text into a Markdown file instead.');
-    if (office) throw new WorkspaceError(`To change a ${formatOf(abs)} file, use ${office === 'xlsx' ? 'xlsx_write_cells' : office === 'docx' ? 'replace_text or docx_insert_paragraph' : 'replace_text'}. Creating new ${formatOf(abs)} files isn't supported yet; write Markdown instead.`);
+    if (office) throw new WorkspaceError(`To change a ${formatOf(abs)} file, use ${office === 'xlsx' ? 'xlsx_write_cells' : office === 'docx' ? 'docx_edit_paragraph, docx_insert_paragraph or replace_text' : 'replace_text'}.${office === 'docx' ? '' : ` Creating new ${formatOf(abs)} files isn't supported yet; write Markdown or a Word (.docx) file instead.`}`);
     if (LATER_EXT[ext]) throw new WorkspaceError(`Jarvis can't edit ${LATER_EXT[ext]} files.`);
     if (!isText(abs)) throw new WorkspaceError(`Jarvis can only edit text files for now (${[...TEXT_EXT].slice(0, 6).join(', ')} …).`);
   }
@@ -625,10 +656,11 @@ export class Workspace {
     const exists = fs.existsSync(r.abs);
     const conflict = () => new WorkspaceError(`${c.filePath} changed on disk after Jarvis prepared this change. Reject it and ask Jarvis again.`);
     if (c.afterBlob) {
-      if (!exists || sha(fs.readFileSync(r.abs)) !== c.beforeBlob) throw conflict();
+      if (c.kind === 'create' ? exists : !exists || sha(fs.readFileSync(r.abs)) !== c.beforeBlob) throw conflict();
       this.snapshot(c.laneId, c.filePath);
+      fs.mkdirSync(path.dirname(r.abs), { recursive: true });
       fs.writeFileSync(r.abs, this.getBlob(c.afterBlob));
-      this.touch(c.laneId, c.filePath, 'edited');
+      this.touch(c.laneId, c.filePath, c.kind === 'create' ? 'created' : 'edited');
       return;
     }
     if (c.kind === 'edit' && (!exists || readText(r.abs) !== c.before)) throw conflict();
@@ -667,7 +699,8 @@ export class Workspace {
     if (c.afterBlob) {
       if (!fs.existsSync(r.abs) || sha(fs.readFileSync(r.abs)) !== c.afterBlob) throw changedSince();
       this.snapshot(c.laneId, c.filePath);
-      fs.writeFileSync(r.abs, this.getBlob(c.beforeBlob!));
+      if (c.kind === 'create') await this.trash(r.abs);
+      else fs.writeFileSync(r.abs, this.getBlob(c.beforeBlob!));
       return;
     }
     if (c.kind === 'edit') {

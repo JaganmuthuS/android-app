@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { Agent } from '../electron/agent';
 import { Db } from '../electron/db';
 import type { ChatMessage, Ollama } from '../electron/ollama';
-import { needsGate, parseTriage } from '../electron/prompts';
+import { needsGate, parseTriage, planFromArgs } from '../electron/prompts';
 import type { JarvisEvent } from '../shared/types';
 
-type ChatOpts = { messages: ChatMessage[]; format?: object; onText?: (t: string) => void; signal?: AbortSignal };
+type ChatOpts = { messages: ChatMessage[]; tools?: { function: { name: string } }[]; think?: boolean; onText?: (t: string) => void; signal?: AbortSignal };
 
 /** A scripted stand-in for the local model. */
 function fakeModel(triage: object, opts: { hang?: boolean } = {}) {
@@ -14,7 +14,10 @@ function fakeModel(triage: object, opts: { hang?: boolean } = {}) {
     async chat(o: ChatOpts) { return (await model.round(o)).content; },
     async round(o: ChatOpts) {
       calls.push(o);
-      if (o.format) return { content: JSON.stringify(triage), toolCalls: [] };
+      const t = triage as { kind: string; title?: string; steps?: { text: string }[] };
+      if (t.kind === 'plan' && o.tools?.some((x) => x.function.name === 'propose_plan')) {
+        return { content: '', toolCalls: [{ function: { name: 'propose_plan', arguments: { title: t.title, steps: (t.steps ?? []).map((x) => x.text), scope: 'Finance (read)' } } }] };
+      }
       if (opts.hang) {
         await new Promise((_, reject) => o.signal?.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); }));
       }
@@ -41,7 +44,15 @@ function setup(triage: object = PLAN, autonomy: 'ask_every_change' | 'autonomous
   return { db, agent, lane, calls, events };
 }
 
-describe('triage parsing', () => {
+describe('plan parsing', () => {
+  it('reads propose_plan arguments in the shapes small models use', () => {
+    expect(planFromArgs({ title: 'X', steps: ['1. Read the memo', '2. Draft notes', '3. Email the board'] })?.steps).toEqual([
+      { text: 'Read the memo', requiresGate: false }, { text: 'Draft notes', requiresGate: false }, { text: 'Email the board', requiresGate: true }]);
+    expect(planFromArgs({ title: 'X', steps: '- Read\n- Write' })?.steps.map((x) => x.text)).toEqual(['Read', 'Write']);
+    expect(planFromArgs({ title: 'X', steps: [{ text: 'Read' }, { step: 'Write' }] })?.steps.map((x) => x.text)).toEqual(['Read', 'Write']);
+    expect(planFromArgs({ title: 'X', steps: ['Only one'] })).toBeNull();
+  });
+
   it('gates risky steps even when the model forgets to', () => {
     const t = parseTriage(JSON.stringify(PLAN));
     expect(t.kind).toBe('plan');
@@ -60,12 +71,14 @@ describe('triage parsing', () => {
 });
 
 describe('agent', () => {
-  it('answers a question directly without a plan', async () => {
-    const { db, agent, lane } = setup({ kind: 'answer', title: 'Quick question' });
-    await agent.send(lane.id, 'What is 2 + 2?');
-    expect(db.getLane(lane.id)).toMatchObject({ status: 'idle', statusText: 'Answered', title: 'Quick question' });
+  it('answers a question directly, in one model call, without a plan', async () => {
+    const { db, agent, lane, calls } = setup({ kind: 'answer', title: 'Quick question' });
+    await agent.send(lane.id, 'Can you please tell me: what is 2 + 2?');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].think).toBe(false); // quick questions don't wait for reasoning
+    expect(db.getLane(lane.id)).toMatchObject({ status: 'idle', statusText: 'Answered', title: 'Tell me: what is 2 +' });
     expect(db.listSteps(lane.id)).toHaveLength(0);
-    expect(db.listMessages(lane.id).map((m) => [m.role, m.payload.text])).toEqual([['user', 'What is 2 + 2?'], ['jarvis', 'Here is the answer.']]);
+    expect(db.listMessages(lane.id).map((m) => [m.role, m.payload.text])).toEqual([['user', 'Can you please tell me: what is 2 + 2?'], ['jarvis', 'Here is the answer.']]);
   });
 
   it('plans, waits for approval, runs, stops at the gate, then finishes', async () => {
@@ -73,6 +86,7 @@ describe('agent', () => {
     await agent.send(lane.id, 'Prepare the board report and email it');
     expect(db.getLane(lane.id)).toMatchObject({ status: 'awaiting_plan_approval', title: 'Board report' });
     expect(calls).toHaveLength(1); // nothing runs before approval
+    expect(db.listMessages(lane.id).filter((m) => m.role === 'jarvis').map((m) => m.kind)).toEqual(['text', 'plan']);
 
     await agent.approvePlan(lane.id);
     let steps = db.listSteps(lane.id);
@@ -150,5 +164,17 @@ describe('agent', () => {
     db.addMemory('Exact figures, no hedging words');
     await agent.send(lane.id, 'Hi');
     expect(calls[0].messages[0].content).toContain('Exact figures, no hedging words');
+  });
+
+  it('thinks for document work and plan steps, as set in Settings', async () => {
+    const { db, agent, lane, calls } = setup({ kind: 'answer', title: 'x' });
+    await agent.send(lane.id, 'Rewrite the second paragraph of Q3.docx');
+    expect(calls.at(-1)!.think).toBe(true);
+    db.setSettings({ thinking: 'off' });
+    await agent.send(lane.id, 'Rewrite it again');
+    expect(calls.at(-1)!.think).toBe(false);
+    db.setSettings({ thinking: 'on' });
+    await agent.send(lane.id, 'Hi');
+    expect(calls.at(-1)!.think).toBe(true);
   });
 });

@@ -3,8 +3,8 @@ import type { Db } from './db';
 import type { ChatMessage, Ollama } from './ollama';
 import { OllamaError } from './ollama';
 import {
-  LANE_TOOL, MAX_TOOL_ROUNDS, PLAN_INTRO, PLAN_INTRO_AUTO, SUMMARY_INSTRUCTION, TOOLS, TRIAGE_INSTRUCTION, TRIAGE_SCHEMA, WEB_TOOLS,
-  parseTriage, stepInstruction, systemPrompt, workspaceSummary,
+  LANE_TOOL, MAX_TOOL_ROUNDS, PLAN_HINT, PLAN_INTRO, PLAN_INTRO_AUTO, PLAN_TOOL, SUMMARY_INSTRUCTION, TOOLS, WEB_TOOLS,
+  planFromArgs, stepInstruction, systemPrompt, workspaceSummary, type Triage,
 } from './prompts';
 import type { Research } from './research';
 import { OsPermissionError, ScopeError, type Workspace } from './workspace';
@@ -62,9 +62,9 @@ export class Agent {
     this.addMessage(laneId, 'user', 'text', { text: clean });
     this.db.replaceSteps(laneId, []);
     this.emitSteps(laneId);
-    this.setStatus(laneId, 'planning', 'Reading the request…', 0);
+    this.setStatus(laneId, 'planning', 'Working…', 0);
     this.attachments.set(laneId, this.workspace ? await this.workspace.attachMentioned(laneId, clean).catch(() => '') : '');
-    await this.task(laneId, (signal) => this.triage(laneId, signal));
+    await this.task(laneId, (signal) => this.start(laneId, signal));
   }
 
   async approvePlan(laneId: string) {
@@ -133,36 +133,24 @@ export class Agent {
 
   /* ---------- the work ---------- */
 
-  private async triage(laneId: string, signal: AbortSignal) {
-    const settings = this.db.getSettings();
-    const history = this.history(laneId);
-    const raw = await this.ollama.chat({
-      model: settings.model,
-      messages: [{ role: 'system', content: this.system(laneId) }, ...history, { role: 'user', content: TRIAGE_INSTRUCTION }],
-      format: TRIAGE_SCHEMA,
-      temperature: 0.2,
-      signal,
-    });
-    const t = parseTriage(raw);
-    const lane = this.mustLane(laneId);
-    if (t.title && lane.title === firstWords(String(history.at(-1)?.content ?? ''))) {
-      this.db.updateLane(laneId, { title: t.title });
-      this.emitLanes();
-    }
+  /**
+   * The first reply to a request. One model call: the model answers (using tools as needed), or calls
+   * propose_plan for a big task. There is no separate "triage" call, which halves the wait.
+   */
+  private async start(laneId: string, signal: AbortSignal) {
+    const out = await this.respond(laneId, [{ role: 'system', content: `${this.system(laneId)}\n\n${PLAN_HINT}` }, ...this.history(laneId)], signal, null, true, {}, true);
+    if (out.plan) return this.proposePlan(laneId, out.plan, signal);
+    this.research?.settle(laneId);
+    const open = this.pendingChanges(laneId);
+    if (open) this.setStatus(laneId, 'awaiting_review', reviewText(open), 0);
+    else this.setStatus(laneId, 'idle', 'Answered', 0);
+  }
 
-    if (t.kind === 'answer') {
-      await this.respond(laneId, [{ role: 'system', content: this.system(laneId) }, ...history], signal, null);
-      this.research?.settle(laneId);
-      const open = this.pendingChanges(laneId);
-      if (open) this.setStatus(laneId, 'awaiting_review', reviewText(open), 0);
-      else this.setStatus(laneId, 'idle', 'Answered', 0);
-      return;
-    }
-
+  private async proposePlan(laneId: string, t: Triage, signal: AbortSignal) {
+    if (t.title) { this.db.updateLane(laneId, { title: t.title }); this.emitLanes(); }
     this.db.replaceSteps(laneId, t.steps);
     this.emitSteps(laneId);
-    const autonomous = lane.autonomy === 'autonomous';
-    this.addMessage(laneId, 'jarvis', 'text', { text: autonomous ? PLAN_INTRO_AUTO : PLAN_INTRO });
+    const autonomous = this.mustLane(laneId).autonomy === 'autonomous';
     this.addMessage(laneId, 'jarvis', 'plan', { scope: t.scope ?? '' });
     if (autonomous) {
       await this.run(laneId, signal);
@@ -227,15 +215,23 @@ export class Agent {
    * One reply from the model, with file tools when a workspace is set. Text streams into a
    * single chat message; every tool call is logged in the chat and the audit log.
    */
-  private async respond(laneId: string, messages: ChatMessage[], signal: AbortSignal, stepIndex: number | null, useTools = true, extra: Record<string, unknown> = {}) {
+  private async respond(laneId: string, messages: ChatMessage[], signal: AbortSignal, stepIndex: number | null, useTools = true, extra: Record<string, unknown> = {}, allowPlan = false): Promise<{ plan?: Triage }> {
     const msg = this.addMessage(laneId, 'jarvis', 'text', { text: '', streaming: true, ...extra });
-    const available = useTools ? this.tools(laneId) : [];
+    const available = useTools ? [...(allowPlan ? [PLAN_TOOL] : []), ...this.tools(laneId)] : [];
     const tools = available.length ? available : undefined;
+    const think = useTools && this.shouldThink(laneId, stepIndex);
     const convo = [...messages];
     let last = 0;
     let latest = '';
-    const flush = () => this.emit({ type: 'stream', laneId, messageId: msg.id, text: latest });
+    let thought = ''; // reasoning from earlier rounds
+    let thinking = '';
+    const flush = () => this.emit({ type: 'stream', laneId, messageId: msg.id, text: latest, thinking: [thought, thinking].filter(Boolean).join('\n\n') || undefined });
+    const tick = () => { const now = Date.now(); if (now - last > 60) { last = now; flush(); } };
     const deniedScopes = new Set<string>();
+    const save = (patch: Record<string, unknown>) => {
+      const all = [thought, thinking].filter(Boolean).join('\n\n');
+      this.db.updateMessage(msg.id, { ...extra, ...patch, ...(all ? { thinking: all } : {}) });
+    };
     try {
       for (let round = 0; ; round++) {
         const res = await this.ollama.round({
@@ -243,21 +239,39 @@ export class Agent {
           messages: convo,
           signal,
           tools: round < MAX_TOOL_ROUNDS ? tools : undefined,
-          onText: (t) => {
-            latest = t;
-            const now = Date.now();
-            if (now - last > 50) { last = now; flush(); }
+          think,
+          onThinking: (t) => {
+            if (!thinking && this.mustLane(laneId).statusText !== 'Thinking…' && BUSY.includes(this.mustLane(laneId).status)) {
+              this.setStatus(laneId, this.mustLane(laneId).status, 'Thinking…', this.mustLane(laneId).progress);
+            }
+            thinking = t; tick();
           },
+          onText: (t) => { latest = t; tick(); },
         });
+        if (thinking) { thought = [thought, thinking].filter(Boolean).join('\n\n'); thinking = ''; }
         if (!res.toolCalls.length || !tools) {
           latest = res.content || latest;
           break;
+        }
+        // A plan stops the turn: nothing runs until the user approves it.
+        const planCall = allowPlan ? res.toolCalls.find((c) => c.function.name === 'propose_plan') : undefined;
+        if (planCall) {
+          const args = (typeof planCall.function.arguments === 'string' ? safeJson(planCall.function.arguments) : planCall.function.arguments) ?? {};
+          const plan = planFromArgs(args);
+          if (plan) {
+            save({ text: this.mustLane(laneId).autonomy === 'autonomous' ? PLAN_INTRO_AUTO : PLAN_INTRO });
+            return { plan };
+          }
         }
         convo.push({ role: 'assistant', content: res.content, tool_calls: res.toolCalls });
         for (const call of res.toolCalls) {
           if (signal.aborted) throw abortError();
           const name = call.function.name;
           const args = (typeof call.function.arguments === 'string' ? safeJson(call.function.arguments) : call.function.arguments) ?? {};
+          if (name === 'propose_plan') {
+            convo.push({ role: 'tool', content: 'This task is small enough to do at once. Do it now with the tools, or answer.', tool_name: name });
+            continue;
+          }
           let result: string;
           try {
             const out = await this.exec(laneId, name, args, stepIndex, signal);
@@ -280,14 +294,26 @@ export class Agent {
         }
         latest = '';
       }
-      this.db.updateMessage(msg.id, { text: latest || '(no reply)', ...extra });
+      save({ text: latest || '(no reply)' });
       this.markCited(laneId, latest);
+      return {};
     } catch (e) {
-      this.db.updateMessage(msg.id, { text: latest ? `${latest} …` : '', ...extra, interrupted: true });
+      save({ text: latest ? `${latest} …` : '', interrupted: true });
       throw e;
     } finally {
       this.emit({ type: 'messages', laneId, messages: this.db.listMessages(laneId) });
     }
+  }
+
+  /** Thinking makes small models much better at document work, at the cost of time; quick questions skip it. */
+  private shouldThink(laneId: string, stepIndex: number | null): boolean {
+    const mode = this.db.getSettings().thinking;
+    if (mode !== 'auto') return mode === 'on';
+    if (stepIndex !== null) return true;
+    const request = [...this.db.listMessages(laneId)].reverse().find((m) => m.role === 'user' && m.kind === 'text');
+    const text = String(request?.payload.text ?? '');
+    return /\.(docx|xlsx|xlsm|pptx|md|txt|csv)\b/i.test(text)
+      || /\b(edit|rewrite|revise|update|change|fix|improve|draft|write|summari[sz]e|restructure|proofread|reword|shorten|expand|translate|compare|analy[sz]e|document|report|memo|letter|essay|paragraph)\b/i.test(text);
   }
 
   /** The tools the model gets in this lane: files when a workspace is set, the web when allowed, other lanes when there are any. */
@@ -475,9 +501,13 @@ function progress(steps: PlanStep[]) {
 
 const reviewText = (n: number) => `${n} change${n > 1 ? 's' : ''} to review`;
 
+/** A lane title from the request: "Can you please summarise notes.md" → "Summarise notes.md". */
 function firstWords(text: string) {
-  const words = text.replace(/\s+/g, ' ').trim().split(' ').slice(0, 6).join(' ');
-  return words.length > 48 ? `${words.slice(0, 47)}…` : words;
+  let t = text.replace(/\s+/g, ' ').trim();
+  for (let i = 0; i < 3; i++) t = t.replace(/^(hey |hi |ok |okay )?(jarvis[,:]? )?(please |pls |kindly )?(can|could|would|will) you (please )?|^(please|pls|kindly) |^(i want you to|i need you to|i'd like you to) /i, '');
+  const words = t.split(' ').slice(0, 6).join(' ').replace(/[?.!,;:]+$/, '');
+  const title = words.charAt(0).toUpperCase() + words.slice(1);
+  return title.length > 48 ? `${title.slice(0, 47)}…` : title || 'New task';
 }
 
 function safeJson(s: string): Record<string, unknown> | null {
