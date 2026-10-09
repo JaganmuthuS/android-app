@@ -451,6 +451,28 @@ export async function xlsxText(bytes: Buffer): Promise<string> {
   return out.join('\n');
 }
 
+/** A sheet as rows of objects keyed by its header row, with formula results as values. For analyze_data. */
+export async function xlsxRows(bytes: Buffer, sheet = ''): Promise<Record<string, unknown>[]> {
+  const wb = new ExcelJS.Workbook();
+  try { await wb.xlsx.load(bytes as unknown as ArrayBuffer); } catch { throw new FormatError('This Excel file could not be opened.'); }
+  const ws = sheet ? wb.getWorksheet(sheet) : wb.worksheets[0];
+  if (!ws) throw new FormatError(`There is no sheet "${sheet}". Sheets: ${wb.worksheets.map((w) => w.name).join(', ')}.`);
+  const plain = (v: unknown): unknown => {
+    if (v && typeof v === 'object' && 'result' in (v as object)) return plain((v as { result: unknown }).result);
+    if (v instanceof Date) return v.toISOString().slice(0, 10);
+    if (v && typeof v === 'object') return formatValue(v);
+    return v ?? null;
+  };
+  let keys: string[] = [];
+  const rows: Record<string, unknown>[] = [];
+  ws.eachRow({ includeEmpty: false }, (row) => {
+    const values = (row.values as unknown[]).slice(1).map(plain);
+    if (!keys.length) { keys = values.map((v, i) => (v == null || v === '' ? `col${i + 1}` : String(v))); return; }
+    rows.push(Object.fromEntries(keys.map((k, i) => [k, values[i] ?? null])));
+  });
+  return rows;
+}
+
 function formatValue(v: unknown): string {
   if (v === null || v === undefined) return '';
   if (v instanceof Date) return v.toISOString().slice(0, 10);

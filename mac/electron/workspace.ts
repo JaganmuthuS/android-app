@@ -3,7 +3,8 @@ import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { FormatError, docxCreate, docxEditParagraph, docxInsertParagraph, docxReplace, docxText, pdfText, pptxReplace, pptxText, xlsxText, xlsxWrite, type CellEdit } from './formats';
+import { parseCsv, runAnalysis } from './compute';
+import { FormatError, xlsxRows, docxCreate, docxEditParagraph, docxInsertParagraph, docxReplace, docxText, pdfText, pptxReplace, pptxText, xlsxText, xlsxWrite, type CellEdit } from './formats';
 import type { Db } from './db';
 import type { Autonomy, Change, FileScope, ScopeMode, TouchAction } from '../shared/types';
 
@@ -30,12 +31,12 @@ const TEXT_EXT = new Set(['.txt', '.md', '.markdown', '.csv', '.tsv', '.json', '
 const LATER_EXT: Record<string, string> = { '.xls': 'old Excel (.xls)', '.ppt': 'old PowerPoint (.ppt)', '.doc': 'old Word (.doc)', '.pages': 'Pages', '.numbers': 'Numbers', '.key': 'Keynote' };
 const OFFICE: Record<string, 'docx' | 'xlsx' | 'pptx' | 'pdf'> = { '.docx': 'docx', '.xlsx': 'xlsx', '.xlsm': 'xlsx', '.pptx': 'pptx', '.pdf': 'pdf' };
 const SKIP_DIRS = new Set(['node_modules', '.git', '.jarvis']);
-const MAX_READ = 60_000;
+const MAX_READ = 30_000;
 const RISKY_PATH = /financ|legal|contract|invoice|budget|board|payroll|tax/i;
 const DIR_MARK = 'dir:';
 
 /** Local models sometimes use other names for the same tool or argument. */
-const TOOL_ALIASES: Record<string, string> = {
+export const TOOL_ALIASES: Record<string, string> = {
   mkdir: 'create_folder', make_folder: 'create_folder', create_directory: 'create_folder', make_directory: 'create_folder', new_folder: 'create_folder',
   list_files: 'list_dir', list_folder: 'list_dir', ls: 'list_dir', list_directory: 'list_dir',
   read: 'read_file', open_file: 'read_file', write: 'write_file', create_file: 'write_file', save_file: 'write_file',
@@ -59,6 +60,7 @@ const ARG_ALIASES: Record<string, string[]> = {
   replace: ['replace', 'new', 'new_text', 'replacement', 'new_string'],
   query: ['query', 'q', 'pattern', 'term', 'keyword'],
   reason: ['reason', 'why', 'explanation', 'description'],
+  code: ['code', 'expression', 'script', 'js', 'javascript', 'formula'],
 };
 function normaliseArgs(a: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = { ...a };
@@ -184,9 +186,20 @@ export class Workspace {
   }
 
   /** Readable files (two levels deep), so the model knows what exists before it calls a tool. */
+  private overviewCache = { key: '', at: 0, text: '' };
+
+  /** The readable files, for the model's context. Cached briefly: it is part of every request. */
   overview(limit = 80): string {
     const root = this.root();
     if (!root) return '';
+    const key = `${root}|${JSON.stringify(this.db.listScopes())}`;
+    if (this.overviewCache.key === key && Date.now() - this.overviewCache.at < 30_000) return this.overviewCache.text;
+    const text = this.buildOverview(root, limit);
+    this.overviewCache = { key, at: Date.now(), text };
+    return text;
+  }
+
+  private buildOverview(root: string, limit: number): string {
     const out: string[] = [];
     let rootReal: string;
     try { rootReal = fs.realpathSync(root); } catch { return ''; }
@@ -301,7 +314,8 @@ export class Workspace {
     const s = (k: string) => (a[k] == null ? '' : String(a[k]));
     switch (name) {
       case 'list_dir': return this.listDir(s('path') || '.');
-      case 'read_file': return this.readFile(s('path'), ctx);
+      case 'read_file': return this.readFile(s('path'), ctx, Number(a.offset ?? 0) || 0);
+      case 'analyze_data': return this.analyze(ctx, s('path'), s('sheet'), s('code'));
       case 'search_files': return this.search(s('query'), s('path') || '.');
       case 'write_file': return /\.docx$/i.test(s('path')) ? this.docxNew(ctx, s('path'), s('content'), s('reason')) : this.stage(ctx, s('path'), s('content'), s('reason'));
       case 'docx_edit_paragraph': return this.docxEdit(ctx, s('path'), Number(String(a.paragraph ?? '').replace('¶', '')), s('content'), s('reason'));
@@ -343,7 +357,7 @@ export class Workspace {
     return readText(abs);
   }
 
-  private async readFile(rel: string, ctx: ToolContext) {
+  private async readFile(rel: string, ctx: ToolContext, offset = 0) {
     if (!rel) throw new WorkspaceError('read_file needs a path.');
     const r = this.resolve(rel, 'read');
     const ext = path.extname(r.abs).toLowerCase();
@@ -363,8 +377,39 @@ export class Workspace {
     }
     this.touch(ctx.laneId, r.rel, 'read');
     const lines = text.split('\n').length;
-    const clipped = text.length > MAX_READ ? `${text.slice(0, MAX_READ)}\n[… ${text.length - MAX_READ} more characters not shown]` : text;
+    const start = Math.max(0, Math.min(offset, text.length));
+    const part = text.slice(start, start + MAX_READ);
+    const rest = text.length - start - part.length;
+    const clipped = (start ? `[… from character ${start}]\n` : '') + part + (rest > 0 ? `\n[… ${rest} more characters. Call read_file with "offset": ${start + part.length} for the next part, or search_files to find a section.]` : '');
     return { result: clipped, log: ['Read', `${r.rel} · ${lines} line${lines === 1 ? '' : 's'}`] as [string, string], read: r.rel };
+  }
+
+  /** Load a table (CSV, Excel or JSON) and run a calculation on its rows in the sandbox. */
+  private async analyze(ctx: ToolContext, rel: string, sheet: string, code: string) {
+    let rows: unknown[] = [];
+    let what = 'a calculation';
+    if (rel) {
+      const r = this.resolve(rel, 'read');
+      const ext = path.extname(r.abs).toLowerCase();
+      if (OFFICE[ext] === 'xlsx') {
+        const bytes = this.mustBytes(ctx.laneId, r.rel, r.abs);
+        rows = await xlsxRows(bytes, sheet);
+      } else {
+        const text = await this.currentText(ctx.laneId, r.rel, r.abs);
+        if (text === null) throw new WorkspaceError(`${r.rel} does not exist.`);
+        if (ext === '.json') { try { const j = JSON.parse(text); rows = Array.isArray(j) ? j : [j]; } catch { throw new WorkspaceError(`${r.rel} is not valid JSON.`); } }
+        else if (['.csv', '.tsv', '.txt'].includes(ext)) rows = parseCsv(text);
+        else throw new WorkspaceError('analyze_data reads CSV, TSV, JSON and Excel files.');
+      }
+      this.touch(ctx.laneId, r.rel, 'read');
+      what = `${r.rel} · ${rows.length} rows`;
+    }
+    try {
+      const result = runAnalysis(code, rows);
+      return { result: `Result (computed from ${rel ? `${rows.length} rows of ${rel}` : 'the code alone'}):\n${result}`, log: ['Calculated', what] as [string, string] };
+    } catch (e) {
+      throw new WorkspaceError((e as Error).message);
+    }
   }
 
   private search(query: string, rel: string) {
@@ -593,6 +638,7 @@ export class Workspace {
     if (auto) {
       await this.apply(change);
       this.db.updateChange(change.id, { status: 'auto_applied' });
+      if (!this.verify(change)) throw new WorkspaceError(`${change.filePath} was written, but reading it back did not match. Check the file, or Undo the change.`);
     } else {
       this.touch(ctx.laneId, change.filePath, 'held');
     }
@@ -600,8 +646,21 @@ export class Workspace {
     const target = change.moveTo ? `${change.filePath} → ${change.moveTo}` : change.filePath;
     const verb = change.kind === 'create' || change.kind === 'mkdir' ? 'Created' : change.kind === 'delete' ? 'Deleted' : change.kind === 'move' ? 'Moved' : 'Edited';
     return auto
-      ? { result: `Applied: ${change.title} (${target}).`, log: [verb, `${target} · applied`] as [string, string] }
+      ? { result: `Applied and verified on disk: ${change.title} (${target}). A backup was kept; the user can undo it.`, log: [verb, `${target} · done`] as [string, string] }
       : { result: `Staged for the user's review, not applied yet: ${change.title} (${target}). Continue; the user reviews changes in the change list.`, log: [verb, `${target} · held for review`] as [string, string] };
+  }
+
+  /** Read the result back from disk: did the change really land? */
+  private verify(c: Change): boolean {
+    try {
+      const base = fs.realpathSync(this.root()!);
+      const abs = path.join(base, c.filePath); // already checked when the change was made
+      if (c.kind === 'mkdir') return fs.statSync(abs).isDirectory();
+      if (c.kind === 'delete') return !fs.existsSync(abs);
+      if (c.kind === 'move') return !fs.existsSync(abs) && fs.existsSync(path.join(base, c.moveTo!));
+      if (c.afterBlob) return sha(fs.readFileSync(abs)) === c.afterBlob;
+      return readText(abs) === (c.after ?? '');
+    } catch { return false; }
   }
 
   /* ---------- applying, undoing, restoring ---------- */
@@ -652,6 +711,7 @@ export class Workspace {
   }
 
   private async apply(c: Change) {
+    this.overviewCache.at = 0;
     const r = this.resolve(c.filePath, 'write');
     const exists = fs.existsSync(r.abs);
     const conflict = () => new WorkspaceError(`${c.filePath} changed on disk after Jarvis prepared this change. Reject it and ask Jarvis again.`);
@@ -694,6 +754,7 @@ export class Workspace {
   }
 
   private async revert(c: Change) {
+    this.overviewCache.at = 0;
     const r = this.resolve(c.filePath, 'write');
     const changedSince = () => new WorkspaceError(`${c.filePath} changed again after this edit, so it can't be undone safely. Use a checkpoint instead.`);
     if (c.afterBlob) {

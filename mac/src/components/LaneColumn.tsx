@@ -80,7 +80,7 @@ function Chat({ lane }: { lane: Lane }) {
             if (!text && !thought) return null;
             return (
               <div key={m.id} className="msg-jarvis">
-                <span className="label">{p.step ? `Jarvis · step ${String(p.step)}` : 'Jarvis'}</span>
+                <span className="label">{p.step ? `Jarvis · step ${String(p.step)}` : 'Jarvis'}{p.model ? <span className="model-tag"> · {String(p.model)}</span> : null}</span>
                 {thought && (
                   <details className="thinking">
                     <summary>{live && !text ? 'Thinking…' : 'Reasoning'}</summary>

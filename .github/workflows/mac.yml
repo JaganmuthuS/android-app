@@ -62,7 +62,7 @@ jobs:
           tag_name: mac-v${{ steps.version.outputs.version }}
           name: JARVIS for Mac ${{ steps.version.outputs.version }}
           body: |
-            0.5.1: faster and much better at Word. One model call per request instead of two, and the model stays loaded, so answers start sooner. Thinking for document work (Settings → Behaviour). Word paragraphs are numbered and rewritten by number as clean tracked changes; the same paragraph can be edited twice; text is found despite quote and spacing differences; new Word documents can be created. Includes Phase 5: web research with numbered sources.
+            0.6.0: autonomous and faster. Jarvis picks the model for each request (a fast model for routine requests, the reasoning model with thinking for research, code, documents and data), carries out the work with edits applied at once (each can be undone; deleting and sending still ask), runs independent reads in parallel, skips repeated folder checks, verifies every change on disk, calculates exactly with a sandboxed analyze_data tool, and no longer asks for your Keychain password after updates.
             First install: download JARVIS-mac-apple-silicon.dmg (Apple silicon) or JARVIS-mac.dmg (any Mac) and drag JARVIS to Applications. After that, update from inside the app. The .zip files are what the in-app updater downloads.
           files: |
             JARVIS-mac.dmg

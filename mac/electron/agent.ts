@@ -2,12 +2,14 @@
 import type { Db } from './db';
 import type { ChatMessage, Ollama } from './ollama';
 import { OllamaError } from './ollama';
+import { route } from './router';
+import { runAnalysis } from './compute';
 import {
-  LANE_TOOL, MAX_TOOL_ROUNDS, PLAN_HINT, PLAN_INTRO, PLAN_INTRO_AUTO, PLAN_TOOL, SUMMARY_INSTRUCTION, TOOLS, WEB_TOOLS,
+  CALC_TOOL, LANE_TOOL, MAX_TOOL_ROUNDS, PLAN_HINT, PLAN_INTRO, PLAN_INTRO_AUTO, PLAN_TOOL, SUMMARY_INSTRUCTION, TOOLS, WEB_TOOLS,
   planFromArgs, stepInstruction, systemPrompt, workspaceSummary, type Triage,
 } from './prompts';
 import type { Research } from './research';
-import { OsPermissionError, ScopeError, type Workspace } from './workspace';
+import { OsPermissionError, ScopeError, TOOL_ALIASES as WORKSPACE_ALIASES, type Workspace } from './workspace';
 import type { JarvisEvent, Lane, LaneStatus, Message, PlanStep } from '../shared/types';
 
 export const NEW_LANE_TITLE = 'New lane';
@@ -20,12 +22,16 @@ const AGENT_TOOL_ALIASES: Record<string, string> = {
   fetch: 'fetch_url', open_url: 'fetch_url', get_url: 'fetch_url', read_url: 'fetch_url', fetch_page: 'fetch_url', browse: 'fetch_url', browse_url: 'fetch_url', visit: 'fetch_url', web_fetch: 'fetch_url', read_webpage: 'fetch_url',
   read_lane_output: 'read_lane', lane_output: 'read_lane',
 };
-const WRITE_TOOLS = new Set(['write_file', 'replace_text', 'docx_insert_paragraph', 'xlsx_write_cells']);
+const WRITE_TOOLS = new Set(['write_file', 'replace_text', 'docx_insert_paragraph', 'docx_edit_paragraph', 'xlsx_write_cells']);
+/** Tools that only look: safe to run side by side, and to answer from memory when repeated. */
+const READ_ONLY = new Set(['list_dir', 'read_file', 'search_files', 'web_search', 'fetch_url', 'read_lane', 'analyze_data']);
 
 export class LaneBusyError extends Error {}
 
 export class Agent {
   private controllers = new Map<string, AbortController>();
+  /** Models Ollama said are not downloaded; the main model stands in for them. */
+  private missingModels = new Set<string>();
   private attachments = new Map<string, string>();
   private active = 0;
   private waiting: (() => void)[] = [];
@@ -216,10 +222,14 @@ export class Agent {
    * single chat message; every tool call is logged in the chat and the audit log.
    */
   private async respond(laneId: string, messages: ChatMessage[], signal: AbortSignal, stepIndex: number | null, useTools = true, extra: Record<string, unknown> = {}, allowPlan = false): Promise<{ plan?: Triage }> {
-    const msg = this.addMessage(laneId, 'jarvis', 'text', { text: '', streaming: true, ...extra });
+    const settings = this.db.getSettings();
+    const r = route(settings, this.request(laneId), stepIndex, !this.missingModels.has(settings.fastModel));
+    // A summary of finished work is routine: the fast model, no reasoning.
+    let model = useTools ? r.model : (settings.fastModel && !this.missingModels.has(settings.fastModel) ? settings.fastModel : settings.model);
+    const think = useTools && r.think;
+    const msg = this.addMessage(laneId, 'jarvis', 'text', { text: '', streaming: true, ...extra, model });
     const available = useTools ? [...(allowPlan ? [PLAN_TOOL] : []), ...this.tools(laneId)] : [];
     const tools = available.length ? available : undefined;
-    const think = useTools && this.shouldThink(laneId, stepIndex);
     const convo = [...messages];
     let last = 0;
     let latest = '';
@@ -228,14 +238,41 @@ export class Agent {
     const flush = () => this.emit({ type: 'stream', laneId, messageId: msg.id, text: latest, thinking: [thought, thinking].filter(Boolean).join('\n\n') || undefined });
     const tick = () => { const now = Date.now(); if (now - last > 60) { last = now; flush(); } };
     const deniedScopes = new Set<string>();
+    // Read-only results already in this conversation: asking again returns them at once.
+    const seen = new Map<string, string>();
     const save = (patch: Record<string, unknown>) => {
       const all = [thought, thinking].filter(Boolean).join('\n\n');
-      this.db.updateMessage(msg.id, { ...extra, ...patch, ...(all ? { thinking: all } : {}) });
+      this.db.updateMessage(msg.id, { ...extra, model, ...patch, ...(all ? { thinking: all } : {}) });
+    };
+    const runCall = async (name: string, args: Record<string, unknown>): Promise<string> => {
+      const canonical = AGENT_TOOL_ALIASES[name] ?? WORKSPACE_ALIASES[name] ?? name;
+      const key = READ_ONLY.has(canonical) ? `${canonical}:${JSON.stringify(args)}` : '';
+      if (key && seen.has(key)) return `(Same as your earlier ${canonical} call; nothing changed since.)\n${seen.get(key)}`;
+      try {
+        const out = await this.exec(laneId, name, args, stepIndex, signal);
+        if (out.log) this.addMessage(laneId, 'system', 'log', { verb: out.log[0], what: out.log[1] });
+        if (key) seen.set(key, out.result);
+        else seen.clear(); // something changed: earlier reads may be stale
+        return out.result;
+      } catch (e) {
+        if ((e as Error).name === 'AbortError' && signal.aborted) throw e;
+        if (e instanceof ScopeError && !deniedScopes.has(e.scopePath)) {
+          deniedScopes.add(e.scopePath);
+          this.addMessage(laneId, 'system', 'error', { text: e.message, grantPath: e.scopePath, grantMode: e.needs });
+        } else if (e instanceof OsPermissionError && !deniedScopes.has('#os')) {
+          deniedScopes.add('#os');
+          this.addMessage(laneId, 'system', 'error', { text: e.message, privacy: true });
+        } else if (!(e instanceof ScopeError) && !(e instanceof OsPermissionError)) {
+          this.addMessage(laneId, 'system', 'log', { verb: 'Failed', what: `${name} · ${(e as Error).message}` });
+        }
+        return `ERROR: ${(e as Error).message}`;
+      }
     };
     try {
       for (let round = 0; ; round++) {
-        const res = await this.ollama.round({
-          model: this.db.getSettings().model,
+        let res: Awaited<ReturnType<Ollama['round']>>;
+        const ask = () => this.ollama.round({
+          model,
           messages: convo,
           signal,
           tools: round < MAX_TOOL_ROUNDS ? tools : undefined,
@@ -248,6 +285,15 @@ export class Agent {
           },
           onText: (t) => { latest = t; tick(); },
         });
+        try {
+          res = await ask();
+        } catch (e) {
+          // The fast model isn't downloaded: use the main model from now on.
+          if (!(e instanceof OllamaError && e.missingModel && model !== settings.model)) throw e;
+          this.missingModels.add(model);
+          model = settings.model;
+          res = await ask();
+        }
         if (thinking) { thought = [thought, thinking].filter(Boolean).join('\n\n'); thinking = ''; }
         if (!res.toolCalls.length || !tools) {
           latest = res.content || latest;
@@ -256,42 +302,26 @@ export class Agent {
         // A plan stops the turn: nothing runs until the user approves it.
         const planCall = allowPlan ? res.toolCalls.find((c) => c.function.name === 'propose_plan') : undefined;
         if (planCall) {
-          const args = (typeof planCall.function.arguments === 'string' ? safeJson(planCall.function.arguments) : planCall.function.arguments) ?? {};
-          const plan = planFromArgs(args);
+          const plan = planFromArgs(argsOf(planCall));
           if (plan) {
             save({ text: this.mustLane(laneId).autonomy === 'autonomous' ? PLAN_INTRO_AUTO : PLAN_INTRO });
             return { plan };
           }
         }
         convo.push({ role: 'assistant', content: res.content, tool_calls: res.toolCalls });
-        for (const call of res.toolCalls) {
-          if (signal.aborted) throw abortError();
-          const name = call.function.name;
-          const args = (typeof call.function.arguments === 'string' ? safeJson(call.function.arguments) : call.function.arguments) ?? {};
-          if (name === 'propose_plan') {
-            convo.push({ role: 'tool', content: 'This task is small enough to do at once. Do it now with the tools, or answer.', tool_name: name });
-            continue;
-          }
-          let result: string;
-          try {
-            const out = await this.exec(laneId, name, args, stepIndex, signal);
-            result = out.result;
-            if (out.log) this.addMessage(laneId, 'system', 'log', { verb: out.log[0], what: out.log[1] });
-          } catch (e) {
-            if ((e as Error).name === 'AbortError' && signal.aborted) throw e;
-            result = `ERROR: ${(e as Error).message}`;
-            if (e instanceof ScopeError && !deniedScopes.has(e.scopePath)) {
-              deniedScopes.add(e.scopePath);
-              this.addMessage(laneId, 'system', 'error', { text: e.message, grantPath: e.scopePath, grantMode: e.needs });
-            } else if (e instanceof OsPermissionError && !deniedScopes.has('#os')) {
-              deniedScopes.add('#os');
-              this.addMessage(laneId, 'system', 'error', { text: e.message, privacy: true });
-            } else if (!(e instanceof ScopeError) && !(e instanceof OsPermissionError)) {
-              this.addMessage(laneId, 'system', 'log', { verb: 'Failed', what: `${name} · ${(e as Error).message}` });
-            }
-          }
-          convo.push({ role: 'tool', content: result, tool_name: name });
-        }
+        if (signal.aborted) throw abortError();
+        const calls = res.toolCalls.map((c) => ({ name: c.function.name, args: argsOf(c) }));
+        // Independent reads run together; anything that changes files runs in order.
+        const parallel = calls.length > 1 && calls.every((c) => READ_ONLY.has(AGENT_TOOL_ALIASES[c.name] ?? WORKSPACE_ALIASES[c.name] ?? c.name));
+        const results = parallel
+          ? await Promise.all(calls.map((c) => runCall(c.name, c.args)))
+          : await calls.reduce<Promise<string[]>>(async (acc, c) => {
+            const done = await acc;
+            if (signal.aborted) throw abortError();
+            if (c.name === 'propose_plan') return [...done, 'This task is small enough to do at once. Do it now with the tools, or answer.'];
+            return [...done, await runCall(c.name, c.args)];
+          }, Promise.resolve([]));
+        calls.forEach((c, i) => convo.push({ role: 'tool', content: results[i], tool_name: c.name }));
         latest = '';
       }
       save({ text: latest || '(no reply)' });
@@ -305,21 +335,17 @@ export class Agent {
     }
   }
 
-  /** Thinking makes small models much better at document work, at the cost of time; quick questions skip it. */
-  private shouldThink(laneId: string, stepIndex: number | null): boolean {
-    const mode = this.db.getSettings().thinking;
-    if (mode !== 'auto') return mode === 'on';
-    if (stepIndex !== null) return true;
-    const request = [...this.db.listMessages(laneId)].reverse().find((m) => m.role === 'user' && m.kind === 'text');
-    const text = String(request?.payload.text ?? '');
-    return /\.(docx|xlsx|xlsm|pptx|md|txt|csv)\b/i.test(text)
-      || /\b(edit|rewrite|revise|update|change|fix|improve|draft|write|summari[sz]e|restructure|proofread|reword|shorten|expand|translate|compare|analy[sz]e|document|report|memo|letter|essay|paragraph)\b/i.test(text);
+  /** The user's latest request in a lane. */
+  private request(laneId: string): string {
+    const m = [...this.db.listMessages(laneId)].reverse().find((x) => x.role === 'user' && x.kind === 'text');
+    return String(m?.payload.text ?? '');
   }
 
   /** The tools the model gets in this lane: files when a workspace is set, the web when allowed, other lanes when there are any. */
   private tools(laneId: string) {
     return [
       ...(this.workspace?.root() ? TOOLS : []),
+      CALC_TOOL,
       ...(this.research?.enabled() ? WEB_TOOLS : []),
       ...(this.otherLanes(laneId).length ? [LANE_TOOL] : []),
     ];
@@ -339,6 +365,11 @@ export class Agent {
       return { result, log: ['Read', `[${source.n}] ${source.title} · ${source.domain}`] };
     }
     if (name === 'read_lane') return this.readLane(laneId, str('lane', 'title', 'name', 'lane_title'));
+    if (name === 'analyze_data' && !str('path', 'file', 'file_path', 'filename')) {
+      try {
+        return { result: `Result:\n${runAnalysis(str('code', 'expression', 'script', 'js', 'javascript', 'formula'))}`, log: ['Calculated', 'a calculation'] };
+      } catch (e) { throw new LaneBusyError((e as Error).message); }
+    }
     if (!this.workspace?.root()) throw new LaneBusyError('No workspace folder is chosen, so files cannot be used. Ask the user to choose one with "Workspace" in the title bar.');
     const out = await this.workspace.exec(name, args, {
       laneId, stepIndex, autonomy: this.mustLane(laneId).autonomy,
@@ -508,6 +539,11 @@ function firstWords(text: string) {
   const words = t.split(' ').slice(0, 6).join(' ').replace(/[?.!,;:]+$/, '');
   const title = words.charAt(0).toUpperCase() + words.slice(1);
   return title.length > 48 ? `${title.slice(0, 47)}…` : title || 'New task';
+}
+
+function argsOf(call: { function: { arguments: unknown } }): Record<string, unknown> {
+  const a = call.function.arguments;
+  return ((typeof a === 'string' ? safeJson(a) : a) as Record<string, unknown> | null) ?? {};
 }
 
 function safeJson(s: string): Record<string, unknown> | null {

@@ -56,6 +56,8 @@ export interface Settings {
   workspace: string | null;   // absolute path of the folder Jarvis works in
   webAccess: boolean;         // web search and page reading
   thinking: 'auto' | 'on' | 'off'; // let the model reason first: auto = for file work and plan steps
+  /** A smaller model for routine requests; '' uses `model` for everything. `model` is the reasoning model. */
+  fastModel: string;
 }
 
 /** A page or file a lane read, numbered per lane so answers and documents can cite it as [n]. */
@@ -213,4 +215,6 @@ export const DEFAULT_SETTINGS: Settings = {
   workspace: null,
   webAccess: true,
   thinking: 'auto',
+  fastModel: '',
 };
+export const RECOMMENDED_FAST_MODEL = 'qwen3:4b';

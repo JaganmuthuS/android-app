@@ -2,7 +2,19 @@
 
 A desktop agent for documents, folders and research, built from `CLAUDE_CODE_PROMPT.md` and the `JARVIS Workspace` design.
 
-## Status: Phase 5 of 8
+## Status: Phase 5 of 8, with 0.6 autonomy
+
+**New in 0.6.0: autonomous and faster**
+- **Automatic model choice**: every request is routed without an extra model call. Quick questions and simple file chores go to a **fast model** (qwen3:4b, downloaded automatically on Macs with 16 GB or more). Research, code, documents, data and plan steps go to the **reasoning model** with thinking. Each reply shows which model answered. Settings → AI engine sets both; if the fast model is missing, the reasoning model answers everything.
+- **Autonomous by default**: Jarvis carries out the work and edits apply at once, each with a backup you can **Undo** or restore from a checkpoint. Deleting files and sending, publishing or exporting still ask. On first launch, 0.6 switches existing lanes to Autonomous and "Edit · ask" folders to "Edit · auto"; change either back any time.
+- **No repeated folder checks**: the list of readable files is cached between requests, a repeated identical read or search is answered from memory, and the model is told to use the file list it has instead of listing folders again.
+- **Parallel work**: independent reads (several files, searches, pages) run at the same time.
+- **Verified results**: after each applied change Jarvis reads the file back from disk and only reports success when it matches.
+- **Exact calculations and data analysis**: `analyze_data` runs a short JavaScript snippet over a CSV, TSV, JSON or Excel table (or just numbers) in a locked sandbox with no access to files, network or the app, and a 3-second limit.
+- **Long files in parts**: `read_file` returns up to 30,000 characters and continues with `offset`, instead of filling the model's memory.
+- **No more Keychain password prompts**: the GitHub update token now lives in a file only your macOS account can read; a token saved by 0.4–0.5 is moved over once.
+- Coding: Jarvis writes code files in any language; it does not run programs or shell commands.
+
 
 **New in 0.5.1: faster, and much better at Word documents**
 - **About twice as fast per request**: Jarvis no longer makes a separate "triage" call before answering. One model call answers, uses tools, or proposes a plan (through a `propose_plan` tool) for big tasks.

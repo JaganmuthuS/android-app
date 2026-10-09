@@ -12,7 +12,7 @@ async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
   const app = await electron.launch({
     ...(packaged ? { executablePath: packaged } : {}),
     args: [...(packaged ? [] : ['.']), `--user-data-dir=${userData}`, '--no-sandbox'],
-    env: { ...process.env, JARVIS_OLLAMA_URL: ollama.url },
+    env: { ...process.env, JARVIS_KEEP_DEFAULTS: '1', JARVIS_OLLAMA_URL: ollama.url },
   });
   const page = await app.firstWindow();
   await page.waitForSelector('.wordmark');
@@ -108,7 +108,7 @@ test('settings: memories, autonomy and engine errors', async () => {
 
   // Switching to a model that isn't downloaded gives a clear error in the chat.
   await page.getByRole('button', { name: 'Settings' }).click();
-  await page.getByLabel('Model').fill('llama3.2:1b');
+  await page.getByLabel('Reasoning model').fill('llama3.2:1b');
   await page.getByRole('button', { name: 'Use model' }).click();
   await expect(page.getByRole('dialog').getByText('Not downloaded yet.', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Done', exact: true }).click();

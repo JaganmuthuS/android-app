@@ -176,7 +176,7 @@ describe('agent research', () => {
 
     // Without a workspace the model still gets the web tools, and the prompt says it can research.
     const answerCall = calls.find((c) => c.tools)!;
-    expect(answerCall.tools!.map((t) => t.function.name)).toEqual(['propose_plan', 'web_search', 'fetch_url']);
+    expect(answerCall.tools!.map((t) => t.function.name)).toEqual(['propose_plan', 'analyze_data', 'web_search', 'fetch_url']);
     expect(answerCall.messages[0].content).toContain('web_search finds pages');
 
     const sources = db.listSources(lane.id);
@@ -205,7 +205,7 @@ describe('agent research', () => {
     const agent = new Agent(db, model, () => {}, () => {}, null, research);
     const lane = db.createLane('New lane', 'ask_every_change');
     await agent.send(lane.id, 'What is the ECB deposit rate?');
-    expect(calls.every((c) => (c.tools ?? []).every((t) => t.function.name === 'propose_plan'))).toBe(true);
+    expect(calls.every((c) => (c.tools ?? []).every((t) => ['propose_plan', 'analyze_data'].includes(t.function.name)))).toBe(true);
     expect(calls[0].messages[0].content).toContain('Web research is turned off');
   });
 });

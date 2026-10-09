@@ -19,7 +19,7 @@ test('Word: reasons first, rewrites a paragraph by number, creates a document; o
   const app = await electron.launch({
     ...(packaged ? { executablePath: packaged } : {}),
     args: [...(packaged ? [] : ['.']), `--user-data-dir=${userData}`, '--no-sandbox'],
-    env: { ...process.env, JARVIS_OLLAMA_URL: ollama.url, JARVIS_WORKSPACE: root },
+    env: { ...process.env, JARVIS_KEEP_DEFAULTS: '1', JARVIS_OLLAMA_URL: ollama.url, JARVIS_WORKSPACE: root },
   });
   const page = await app.firstWindow();
   await page.waitForSelector('.wordmark');

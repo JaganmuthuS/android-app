@@ -2,7 +2,7 @@
 import * as http from 'http';
 import type { AddressInfo } from 'net';
 
-export interface FakeOllama { url: string; installed: string[]; chats: { think: boolean; keepAlive?: string; messages: number }[]; close(): Promise<void> }
+export interface FakeOllama { url: string; installed: string[]; chats: { model: string; think: boolean; keepAlive?: string; messages: number }[]; close(): Promise<void> }
 
 const PLAN = {
   kind: 'plan', title: 'Board summary', scope: 'Finance (read) · Board (write)',
@@ -69,7 +69,7 @@ export async function startFakeOllama(opts: { installed?: string[]; chunkMs?: nu
       const { model, messages, tools } = JSON.parse(body) as { model: string; messages: { role: string; content: string }[]; tools?: { function: { name: string } }[] };
       const canPlan = !!tools?.some((t) => t.function.name === 'propose_plan');
       if (!state.installed.includes(model)) { res.statusCode = 404; return json({ error: `model "${model}" not found` }); }
-      state.chats.push({ think: !!(JSON.parse(body) as { think?: boolean }).think, keepAlive: (JSON.parse(body) as { keep_alive?: string }).keep_alive, messages: messages.length });
+      state.chats.push({ model, think: !!(JSON.parse(body) as { think?: boolean }).think, keepAlive: (JSON.parse(body) as { keep_alive?: string }).keep_alive, messages: messages.length });
       if (!messages.length) return json({ model, done: true, done_reason: 'load' }); // loading the model ahead of time
       const users = messages.filter((m) => m.role === 'user').map((m) => m.content);
       const last = messages.at(-1)!;

@@ -13,12 +13,14 @@ export function workspaceSummary(root: string | null, scopes: FileScope[]): stri
 export function systemPrompt(memories: Memory[], now = new Date(), workspace = '', web = true, otherLanes: string[] = []): string {
   const active = memories.filter((m) => m.enabled);
   return [
-    'You are JARVIS, a desktop agent on the user\'s Mac that works on documents, folders and research.',
-    'Tone: neutral and professional. Short sentences. Exact figures. No hedging words, no exclamation marks, no emoji, no butler persona.',
+    'You are JARVIS, an autonomous agent on the user\'s Mac for research, reasoning, web search, coding, documents, data analysis and file management.',
+    'Work like this: understand the request, find the relevant files, do the work with the tools, check the result, then report. Execute; do not just explain how. Do not ask for approval of intermediate steps. Infer reasonable defaults from context and the files\' existing conventions; ask only when essential information is missing.',
+    'Be efficient: use the file list below instead of listing folders again, read only the files and parts you need, never repeat a tool call you already made, and search the web only when current or outside facts are needed.',
+    'Never claim something was created, changed or calculated unless a tool result confirmed it. Use analyze_data for arithmetic instead of computing in your head.',
+    'Reply concisely: the answer or the result first, then only important findings, limits or errors. No narration of tool calls, no filler. Exact figures. No hedging words, no exclamation marks, no emoji, no butler persona.',
     'Cite a source for every number and claim you state, by its number in square brackets, like [2]. Every page you read with fetch_url and every file you read gets a number. Never cite a number you were not given. If you have no source, say so plainly.',
-    'Ask instead of guessing when a request is ambiguous.',
     'You can list, read and search files, create folders, and create or edit text and Markdown files, using the tools. To make a folder, use create_folder; never write an empty file in its place. Read a file before you describe or change it. Never invent file contents.',
-    'Your edits are never applied directly: each one is staged as a change the user reviews, unless their autonomy setting applies it. Keep the existing structure and wording of files; change only what the task needs.',
+    'Depending on the user\'s settings, your edits apply at once (with a backup the user can undo) or wait for review; tool results say which. Keep the existing structure, wording and formatting of files; change only what the task needs. Prefer writing a new file over replacing an original unless the user asked to change the original. You can write code files of any language, but you cannot run programs or shell commands.',
     'Word: read_file shows each paragraph with its number, like "¶12 Net revenue was …". To change a paragraph, use docx_edit_paragraph with that number and the complete new text of the paragraph; to add paragraphs, use docx_insert_paragraph with after_paragraph; to create a new Word document, use write_file with a .docx path and simple text ("# " headings, "- " bullets, **bold**). Word edits are saved as tracked changes the user can accept in Word. Citations like [2] in new Word text become footnotes naming the source. Work on the document itself: never say you edited it without calling a tool, and read it first.',
     'You can also read Excel, PowerPoint and PDF files, change Excel cells (formatting and other formulas are kept) and change PowerPoint slide text. You cannot edit PDFs or create new Excel or PowerPoint files.',
     web
@@ -95,7 +97,7 @@ const tool = (name: string, description: string, properties: Record<string, { ty
 
 export const TOOLS: ToolSpec[] = [
   tool('list_dir', 'List the files and folders in a workspace folder. Use "." for the top level, which also shows each folder\'s access.', { path: { type: 'string', description: 'Folder path relative to the workspace' } }, ['path']),
-  tool('read_file', 'Read a file: text, Markdown, CSV, JSON, Word (.docx), Excel (.xlsx, shows cell addresses like B2=4.82), PowerPoint (.pptx, by slide) or PDF.', { path: { type: 'string', description: 'File path relative to the workspace' } }, ['path']),
+  tool('read_file', 'Read a file: text, code, Markdown, CSV, JSON, Word (.docx, numbered paragraphs), Excel (.xlsx, cell addresses like B2=4.82), PowerPoint (.pptx, by slide) or PDF. Long files come in parts: pass "offset" for the next part.', { path: { type: 'string', description: 'File path relative to the workspace' }, offset: { type: 'number', description: 'Optional: character to start from' } }, ['path']),
   tool('search_files', 'Find files whose name or text contains a word or phrase.', { query: { type: 'string', description: 'Word or phrase to find' }, path: { type: 'string', description: 'Folder to search, "." for everything readable' } }, ['query']),
   tool('replace_text', 'Change part of a text, Markdown, Word (.docx, saved as a tracked change) or PowerPoint (.pptx) file. "find" is copied from the file and must appear once. For Word, docx_edit_paragraph is usually easier.', {
     path: { type: 'string', description: 'File path' }, find: { type: 'string', description: 'Existing text' }, replace: { type: 'string', description: 'New text' },
@@ -133,6 +135,11 @@ export const WEB_TOOLS: ToolSpec[] = [
     url: { type: 'string', description: 'The full address, e.g. https://www.ecb.europa.eu/…' }, offset: { type: 'number', description: 'Optional: character to start from, for long pages' },
   }, ['url']),
 ];
+
+export const CALC_TOOL: ToolSpec = tool('analyze_data', 'Calculate exactly instead of estimating: run a short JavaScript snippet. With "path" (CSV, TSV, JSON or Excel), the table is loaded as `rows` (objects keyed by the header row). Helpers: sum, avg, min, max, median, round(x, digits), groupBy(rows, key), sortBy(rows, key, desc), unique, count. The last expression is the result. Use it for totals, averages, growth rates, comparisons and any arithmetic.', {
+  code: { type: 'string', description: 'JavaScript, e.g. round(sum(rows.map(r => r.Revenue)) / 1e6, 2)  or  (4.82 - 4.61) / 4.61 * 100' },
+  path: { type: 'string', description: 'Optional data file in the workspace' }, sheet: { type: 'string', description: 'Excel only: sheet name; empty for the first' },
+}, ['code']);
 
 export const LANE_TOOL: ToolSpec = tool('read_lane', 'Read what another lane found: its latest answers and its sources.', {
   lane: { type: 'string', description: 'The lane title, or a few words of it' },

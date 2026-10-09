@@ -11,6 +11,7 @@ import { Workspace } from './workspace';
 import { Research } from './research';
 import { SWAP_SCRIPT, Updater, bundleVersion } from './updater';
 import type { JarvisEvent, ScopeMode, Settings, UiState, UpdateState } from '../shared/types';
+import { RECOMMENDED_FAST_MODEL } from '../shared/types';
 
 const DEFAULT_BOUNDS = { width: 1440, height: 900 };
 const MIN_SIZE = { width: 1180, height: 720 };
@@ -28,18 +29,40 @@ let updater: Updater;
 let update: UpdateState = { state: 'idle' };
 const setUpdate = (u: UpdateState) => { update = u; emit({ type: 'update', update }); };
 
-/* ---------- GitHub token for private repositories, kept encrypted by the macOS Keychain ---------- */
+/*
+ * GitHub token for private repositories. It lives in a file only your macOS account can read (mode 600)
+ * rather than the Keychain: an ad-hoc signed app counts as a new app after every update, so the Keychain
+ * asked for your Mac password each time. The token only needs read access to one repository.
+ */
+const tokenFile = () => path.join(app.getPath('userData'), 'github-token');
 function githubToken(): string | null {
+  try {
+    const t = fs.readFileSync(tokenFile(), 'utf8').trim();
+    if (t) return t;
+  } catch { /* none saved in the file yet */ }
+  // Moving a token saved by 0.4–0.5 out of the Keychain: one last Keychain prompt, then never again.
   const stored = db.getKv<string | null>('githubToken', null);
-  if (!stored) return null;
-  try { return safeStorage.isEncryptionAvailable() ? safeStorage.decryptString(Buffer.from(stored, 'base64')) : null; } catch { return null; }
+  if (!stored || db.getKv('githubTokenMigrated', false)) return null;
+  db.setKv('githubTokenMigrated', true);
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    const t = safeStorage.decryptString(Buffer.from(stored, 'base64'));
+    writeToken(t);
+    db.setKv('githubToken', null);
+    return t;
+  } catch { return null; }
+}
+function writeToken(t: string) {
+  fs.writeFileSync(tokenFile(), t, { mode: 0o600 });
+  fs.chmodSync(tokenFile(), 0o600);
 }
 function saveGithubToken(token: string) {
   const t = token.trim();
-  if (!t) { db.setKv('githubToken', null); return; }
+  if (!t) { fs.rmSync(tokenFile(), { force: true }); db.setKv('githubToken', null); return; }
   if (!/^[\w-]{20,255}$/.test(t)) throw new Error('That does not look like a GitHub token.');
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('This Mac cannot store the token securely.');
-  db.setKv('githubToken', safeStorage.encryptString(t).toString('base64'));
+  writeToken(t);
+  db.setKv('githubToken', null);
+  db.setKv('githubTokenMigrated', true);
 }
 
 async function checkForUpdate(): Promise<UpdateState> {
@@ -98,9 +121,43 @@ let lastWarm = 0;
 async function warmModel(force = false) {
   if (!force && Date.now() - lastWarm < 10 * 60 * 1000) return;
   lastWarm = Date.now();
-  const model = db.getSettings().model;
-  const status = await ollama.status(model);
-  if (status.reachable && status.modelInstalled) await ollama.warm(model);
+  const s = db.getSettings();
+  const status = await ollama.status(s.model);
+  if (!status.reachable) return;
+  const installed = (m: string) => status.models.some((x) => x.name === m || x.name === `${m}:latest`);
+  // The fast model first: it answers most quick requests. Both fit in memory on a 16 GB Mac.
+  for (const m of [s.fastModel, s.model]) if (m && installed(m)) await ollama.warm(m);
+}
+
+/**
+ * 0.6 defaults, once: work autonomously (edits apply at once, with backups and Undo; deleting and
+ * sending still ask), and on Macs with 16 GB or more, a fast model for routine requests.
+ */
+async function upgradeTo06() {
+  if (db.getKv('defaults-0.6', false) || process.env.JARVIS_KEEP_DEFAULTS === '1') return;
+  db.setKv('defaults-0.6', true);
+  const memory = Number(process.env.JARVIS_TEST_MEMORY_GB) * 1024 ** 3 || os.totalmem();
+  const big = memory >= 15 * 1024 ** 3;
+  db.setSettings({ autonomy: 'autonomous', ...(big && !db.getSettings().fastModel ? { fastModel: RECOMMENDED_FAST_MODEL } : {}) });
+  for (const lane of db.listLanes()) db.updateLane(lane.id, { autonomy: 'autonomous' });
+  for (const sc of db.listScopes()) if (sc.mode === 'edit_ask') db.setScope(sc.path, 'edit_auto');
+  emit({ type: 'settings', settings: db.getSettings() });
+  emit({ type: 'lanes', lanes: db.listLanes() });
+  emit({ type: 'scopes', scopes: workspace.syncScopes() });
+  await ensureFastModel();
+}
+
+/** Download the fast model in the background if it is set but missing (once per model). */
+async function ensureFastModel() {
+  const s = db.getSettings();
+  if (!s.fastModel || s.fastModel === s.model || db.getKv(`pulled-${s.fastModel}`, false)) return;
+  const status = await ollama.status(s.fastModel);
+  if (!status.reachable) return;
+  if (status.modelInstalled) { db.setKv(`pulled-${s.fastModel}`, true); return; }
+  db.setKv(`pulled-${s.fastModel}`, true);
+  await ollama.pull(s.fastModel, (progress) => emit({ type: 'pull', progress }))
+    .then(() => warmModel(true))
+    .catch(() => db.setKv(`pulled-${s.fastModel}`, false));
 }
 
 function createWindow() {
@@ -221,10 +278,11 @@ function registerIpc() {
     if (Number.isInteger(patch.maxParallel) && patch.maxParallel! >= 1 && patch.maxParallel! <= 4) clean.maxParallel = patch.maxParallel;
     if (typeof patch.webAccess === 'boolean') clean.webAccess = patch.webAccess;
     if (['auto', 'on', 'off'].includes(patch.thinking as string)) clean.thinking = patch.thinking;
-    const modelChanged = clean.model && clean.model !== db.getSettings().model;
+    if (typeof patch.fastModel === 'string' && /^[\w.:/-]{0,100}$/.test(patch.fastModel)) clean.fastModel = patch.fastModel;
+    const modelChanged = (clean.model && clean.model !== db.getSettings().model) || (clean.fastModel && clean.fastModel !== db.getSettings().fastModel);
     const s = db.setSettings(clean);
     emit({ type: 'settings', settings: s });
-    if (modelChanged) void warmModel(true);
+    if (modelChanged) void ensureFastModel().then(() => warmModel(true));
     return s;
   });
   handle('engine:status', () => ollama.status(db.getSettings().model));
@@ -254,11 +312,11 @@ function registerIpc() {
       type: 'question',
       message: `What may Jarvis do in “${path.basename(res.filePaths[0])}”?`,
       detail: 'This applies to the folder and every folder inside it. You can change any folder later in Folder access.',
-      buttons: ['Edit, and ask me before every change', 'Read only', 'Nothing yet, I will choose per folder'],
+      buttons: ['Edit (changes apply at once; every change can be undone)', 'Edit, but ask me before every change', 'Read only', 'Nothing yet, I will choose per folder'],
       defaultId: 0,
-      cancelId: 2,
+      cancelId: 3,
     });
-    workspace.setAll((['edit_ask', 'read', 'none'] as const)[choice.response] ?? 'none');
+    workspace.setAll((['edit_auto', 'edit_ask', 'read', 'none'] as const)[choice.response] ?? 'none');
     const s = db.getSettings();
     emit({ type: 'settings', settings: s });
     return s;
@@ -385,7 +443,7 @@ app.whenReady().then(() => {
   agent.recover();
   registerIpc();
   createWindow();
-  void warmModel(true);
+  void upgradeTo06().then(() => warmModel(true));
   app.on('browser-window-focus', () => { void warmModel(); });
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });

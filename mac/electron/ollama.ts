@@ -13,7 +13,9 @@ export const CONTEXT_TOKENS = 16384;
  */
 export const KEEP_ALIVE = '30m';
 
-export class OllamaError extends Error {}
+export class OllamaError extends Error {
+  constructor(message: string, public missingModel = false) { super(message); }
+}
 
 const stripThinking = (s: string) => s.replace(/<think>[\s\S]*?(<\/think>|$)/g, '');
 
@@ -104,7 +106,7 @@ export class Ollama {
       let msg = body;
       try { msg = (JSON.parse(body) as { error?: string }).error ?? body; } catch { /* plain text */ }
       if (opts.think && /does not support thinking|think value/i.test(msg)) return this.round({ ...opts, think: false });
-      if (res.status === 404) throw new OllamaError(`The model "${opts.model}" is not downloaded yet. Open Settings to download it.`);
+      if (res.status === 404) throw new OllamaError(`The model "${opts.model}" is not downloaded yet. Open Settings to download it.`, true);
       if (/does not support tools/i.test(msg)) throw new OllamaError(`The model "${opts.model}" can't use tools, so it can't work with files. Choose qwen3:8b or qwen3:4b in Settings.`);
       throw new OllamaError(`Ollama returned an error: ${msg || res.status}`);
     }

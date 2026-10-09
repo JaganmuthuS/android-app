@@ -1,7 +1,7 @@
 import { Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { DiagnosticLine } from '../../shared/types';
-import { RECOMMENDED_MODEL, type Autonomy } from '../../shared/types';
+import { RECOMMENDED_FAST_MODEL, RECOMMENDED_MODEL, type Autonomy } from '../../shared/types';
 import { useStore } from '../store';
 import { OLLAMA_DOWNLOAD, PullBar } from './SetupCard';
 
@@ -19,6 +19,7 @@ export function SettingsDialog() {
   const pull = useStore((s) => s.pull);
   const st = useStore.getState();
   const [model, setModel] = useState('');
+  const [fast, setFast] = useState('');
   const [url, setUrl] = useState('');
   const [memo, setMemo] = useState('');
   const [confirmWipe, setConfirmWipe] = useState(false);
@@ -37,7 +38,7 @@ export function SettingsDialog() {
     : '';
 
   useEffect(() => {
-    if (open && settings) { setModel(settings.model); setUrl(settings.ollamaUrl); setConfirmWipe(false); }
+    if (open && settings) { setModel(settings.model); setFast(settings.fastModel); setUrl(settings.ollamaUrl); setConfirmWipe(false); }
   }, [open, settings]);
   const autoCheck = useStore((s) => s.checkOnOpen);
   useEffect(() => {
@@ -53,7 +54,8 @@ export function SettingsDialog() {
   if (!open || !settings) return null;
   const installed = engine?.models ?? [];
   const pulling = !!pull && !pull.done && !pull.error;
-  const modelInstalled = installed.some((m) => m.name === model || m.name === `${model}:latest`);
+  const isInstalled = (m: string) => installed.some((x) => x.name === m || x.name === `${m}:latest`);
+  const modelInstalled = isInstalled(model);
 
   return (
     <div className="dialog-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) st.openSettings(false); }}>
@@ -91,20 +93,35 @@ export function SettingsDialog() {
               ? <>Ollama {engine.version} is running · {installed.length} model{installed.length === 1 ? '' : 's'} downloaded</>
               : <>Ollama is not running. <button type="button" className="link-btn" onClick={() => void window.jarvis?.openExternal(OLLAMA_DOWNLOAD)}>Download Ollama</button>, open it, then check again.</>}
           </p>
+          <p className="field-hint">JARVIS picks the model for each request by itself: the fast model for quick questions and simple file chores, the reasoning model (with thinking) for research, code, documents, data and plan steps. The label above each reply shows which one answered.</p>
           <div className="field">
-            <label htmlFor="set-model">Model</label>
+            <label htmlFor="set-model">Reasoning model</label>
             <div className="row">
               <input id="set-model" className="input" list="installed-models" value={model} onChange={(e) => setModel(e.target.value.trim())} placeholder={RECOMMENDED_MODEL} />
               <datalist id="installed-models">{installed.map((m) => <option key={m.name} value={m.name}>{m.params}</option>)}</datalist>
               <button type="button" className="btn btn-secondary" disabled={!model || model === settings.model} onClick={() => void st.saveSettings({ model })}>Use model</button>
             </div>
             <p className="field-hint">
-              {modelInstalled ? 'Downloaded.' : 'Not downloaded yet.'} {RECOMMENDED_MODEL} is recommended for Macs with 16 GB of memory; on 8 GB, try qwen3:4b.
+              {modelInstalled ? 'Downloaded.' : 'Not downloaded yet.'} {RECOMMENDED_MODEL} suits 16 GB of memory; with 32 GB or more, qwen3:14b reasons better; on 8 GB, use qwen3:4b and no fast model.
             </p>
             {engine?.reachable && !modelInstalled && model && (
               <button type="button" className="btn btn-primary" disabled={pulling} onClick={() => void st.pullModel(model)}>{pulling ? 'Downloading…' : `Download ${model}`}</button>
             )}
             {engine?.reachable && <PullBar />}
+          </div>
+          <div className="field">
+            <label htmlFor="set-fast">Fast model</label>
+            <div className="row">
+              <input id="set-fast" className="input" list="installed-models" value={fast} onChange={(e) => setFast(e.target.value.trim())} placeholder={`none (or ${RECOMMENDED_FAST_MODEL})`} />
+              <button type="button" className="btn btn-secondary" disabled={fast === settings.fastModel} onClick={() => void st.saveSettings({ fastModel: fast })}>Use</button>
+            </div>
+            <p className="field-hint">
+              {!settings.fastModel ? 'None: the reasoning model answers everything.' : isInstalled(settings.fastModel) ? `${settings.fastModel} is downloaded and answers routine requests.` : `${settings.fastModel} is downloading or not downloaded yet; until then the reasoning model answers everything.`}
+              {' '}{RECOMMENDED_FAST_MODEL} (2.5 GB) is recommended. Leave empty to use one model.
+            </p>
+            {engine?.reachable && settings.fastModel && !isInstalled(settings.fastModel) && (
+              <button type="button" className="btn btn-primary" disabled={pulling} onClick={() => void st.pullModel(settings.fastModel)}>{pulling ? 'Downloading…' : `Download ${settings.fastModel}`}</button>
+            )}
           </div>
           <div className="field">
             <label htmlFor="set-url">Ollama address</label>
@@ -125,7 +142,7 @@ export function SettingsDialog() {
                 <button key={o.value} type="button" role="radio" aria-checked={settings.autonomy === o.value} className="seg-opt" onClick={() => void st.saveSettings({ autonomy: o.value })}>{o.label}</button>
               ))}
             </div>
-            <p className="field-hint">Every level asks before steps that send, publish, delete or export. Ask every change: every edit waits for your Accept. Ask if risky: small, safe edits apply at once. Autonomous: edits apply at once except in folders set to Edit · ask.</p>
+            <p className="field-hint">Every level asks before deleting files and before steps that send, publish or export. Autonomous (recommended): Jarvis carries out the work and edits apply at once, each with a backup you can Undo, except in folders set to Edit · ask. Ask if risky: small, safe edits apply at once. Ask every change: every edit waits for your Accept.</p>
           </div>
           <div className="field">
             <label htmlFor="set-parallel">Lanes that can work at the same time</label>

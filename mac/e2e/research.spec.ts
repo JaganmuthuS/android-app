@@ -15,7 +15,7 @@ test('web research: search, read, cite, and list numbered sources', async () => 
   const app = await electron.launch({
     ...(packaged ? { executablePath: packaged } : {}),
     args: [...(packaged ? [] : ['.']), `--user-data-dir=${userData}`, '--no-sandbox'],
-    env: { ...process.env, JARVIS_OLLAMA_URL: ollama.url, JARVIS_SEARCH_URL: `${ollama.url}/ddg/html/`, JARVIS_ALLOW_LOCAL_WEB: '1' },
+    env: { ...process.env, JARVIS_KEEP_DEFAULTS: '1', JARVIS_OLLAMA_URL: ollama.url, JARVIS_SEARCH_URL: `${ollama.url}/ddg/html/`, JARVIS_ALLOW_LOCAL_WEB: '1' },
   });
   const page = await app.firstWindow();
   await page.waitForSelector('.wordmark');
